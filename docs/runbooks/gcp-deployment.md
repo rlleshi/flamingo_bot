@@ -174,6 +174,64 @@ no code release is needed. Points worth knowing before tuning them:
   balancer or Cloud Armor in front changes the header shape; set the variable to
   `1` in the same change, or every visitor collapses into one bucket.**
 
+## 3b. Aggregate widget feedback
+
+Collection is off by default. It counts only suggestion displays/clicks and
+voluntary binary answer ratings, in daily aggregate documents in the existing
+quota database. No corpus write permission, new database, analytics vendor,
+visitor identifiers, or raw-event storage is needed.
+
+Before enabling it, an authorized operator must configure this TTL policy:
+
+```bash
+gcloud firestore fields ttls update expires_at \
+  --collection-group=widget_metrics --enable-ttl \
+  --project "$GCP_PROJECT_ID" --database=flamingo-quotas
+
+gcloud firestore fields ttls list \
+  --collection-group=widget_metrics \
+  --project "$GCP_PROJECT_ID" --database=flamingo-quotas
+```
+
+Wait for `ttlConfig.state` to be `ACTIVE`. Each UTC day's bucket expires 90 days
+after that day's start, not 90 days after its last update. Reporting excludes
+expired records even before physical deletion. [Firestore TTL deletion is
+asynchronous](https://docs.cloud.google.com/firestore/native/docs/ttl), usually
+within 24 hours, not an exact-time deletion guarantee. Keep this collection out
+of backups, exports, or pipelines with longer retention; this feature does not
+create any such pipeline.
+
+Uvicorn access logs for `/v1/widget-metrics` are filtered by the application.
+Cloud Run also creates platform request logs independently. Add a narrowly scoped
+exclusion for this route to every enabled project log sink that could retain it:
+
+```bash
+gcloud logging sinks list --project "$GCP_PROJECT_ID"
+
+gcloud logging sinks update _Default --project "$GCP_PROJECT_ID" \
+  --add-exclusion='name=widget-metrics-no-request-history,filter=resource.type="cloud_run_revision" AND resource.labels.service_name="flamingo-bot" AND log_id("run.googleapis.com/requests") AND httpRequest.requestUrl=~"/v1/widget-metrics(/|[?]|$)"'
+```
+
+Preserve existing sink destinations and exclusions. If the named exclusion
+already exists, use `--update-exclusion` instead. Apply the same route-specific
+exclusion to any other applicable sink; do not modify `_Required`, which does
+not retain these Cloud Run request logs. Review any inherited organization/folder
+sinks or external access logging separately. Project exclusions do not control
+those. Do not enable collection until this review is complete. These operations
+need an authorized operator, not additional permissions for the runtime/deployer.
+
+Then set the GitHub repository variable `FLAMINGO_WIDGET_METRICS_ENABLED=true`
+and deploy through the existing owner-approved workflow. Keep it false to disable
+collection and hide rating controls without affecting chat or the four hints.
+The variable is a non-secret switch, not permission to read reports. A separate
+30/minute per-caller in-memory burst limit, 120/minute per-instance global limit,
+and 10,000-report durable daily ceiling bound feedback writes independently of
+the paid-model chat quota. Counters are best-effort; client retries and persistent
+cross-browser deduplication are deliberately absent.
+
+The owner-only report command and privacy disclosure are documented in
+[widget integration](widget-integration.md#aggregate-feedback-and-ratings).
+
 ## 4. First ingestion and local verification
 
 Run the local dry-run first:

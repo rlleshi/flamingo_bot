@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { selectSuggestions, suggestionBank } from "./suggestions";
 
 describe("suggested questions", () => {
-  it("contains thirteen distinct bilingual questions with compact labels", () => {
-    expect(suggestionBank).toHaveLength(13);
-    expect(new Set(suggestionBank.map((entry) => entry.id)).size).toBe(13);
+  it("contains nineteen distinct bilingual questions with compact labels", () => {
+    expect(suggestionBank).toHaveLength(19);
+    expect(new Set(suggestionBank.map((entry) => entry.id)).size).toBe(19);
     for (const entry of suggestionBank) {
       for (const locale of ["sq", "en"] as const) {
         expect(entry[locale].label.length).toBeLessThanOrEqual(32);
@@ -15,27 +15,43 @@ describe("suggested questions", () => {
     }
   });
 
-  it("draws two distinct prompts without fetching or generating them", () => {
+  it("draws four distinct prompts without fetching or generating them", () => {
     const picked = selectSuggestions("sq", () => 0);
-    expect(picked).toHaveLength(2);
-    expect(picked.map((entry) => entry.id)).toEqual(["movement", "diaspora"]);
+    expect(picked).toHaveLength(4);
+    expect(picked.map((entry) => entry.id)).toEqual(["movement", "diaspora", "pulsi", "peak_day"]);
   });
 
-  it("can draw the last entry, including the police-response question", () => {
+  it("can draw the last entry, including the detained-relative question", () => {
     const picked = selectSuggestions("sq", () => 0.999);
-    expect(picked.map((entry) => entry.id)).toContain("police_response");
+    expect(picked.map((entry) => entry.id)).toContain("detained_relative");
     expect(picked[0].id).not.toBe(picked[1].id);
   });
 
   it.each(["sq", "en"])("can draw both recent-event questions in %s", (locale) => {
-    const draws = [0.85, 0.999];
+    const dayIndex = suggestionBank.findIndex((entry) => entry.id === "protest_day_140");
+    const policeIndex = suggestionBank.findIndex((entry) => entry.id === "police_response");
+    const draws = [
+      (dayIndex + 0.5) / suggestionBank.length,
+      (policeIndex - 1 + 0.5) / (suggestionBank.length - 1),
+    ];
     const picked = selectSuggestions(locale, () => draws.shift() ?? 0);
-    expect(picked.map((entry) => entry.id)).toEqual(["protest_day_140", "police_response"]);
-    expect(picked.map((entry) => entry.label)).toEqual(
+    expect(picked.slice(0, 2).map((entry) => entry.id)).toEqual(["protest_day_140", "police_response"]);
+    expect(picked.slice(0, 2).map((entry) => entry.label)).toEqual(
       locale === "sq"
         ? ["Çfarë ndodhi më 17 tetor?", "Si reagoi policia?"]
         : ["What happened on 17 October?", "How did police respond?"],
     );
+  });
+
+  it.each(suggestionBank)("can draw $id in both languages", (entry) => {
+    const draw = (suggestionBank.indexOf(entry) + 0.5) / suggestionBank.length;
+    for (const locale of ["sq", "en"] as const) {
+      const picked = selectSuggestions(locale, () => draw);
+      expect(picked).toHaveLength(4);
+      expect(picked[0]).toEqual({ id: entry.id, ...entry[locale] });
+      expect(picked[0].id).not.toBe(picked[1].id);
+      expect(new Set(picked.map((suggestion) => suggestion.id)).size).toBe(4);
+    }
   });
 
   it("uses English on English pages and Albanian otherwise", () => {
@@ -65,6 +81,36 @@ describe("suggested questions", () => {
     );
     expect(police?.en.question).toBe(
       "What do sources report about police actions during the Tirana protests on 13–17 October 2026? Answer in English.",
+    );
+  });
+
+  it.each([
+    "protest_safety",
+    "free_legal_help",
+    "arrest_rights",
+    "protest_preparation",
+    "document_abuses",
+    "detained_relative",
+  ])("keeps Albanian context in the full %s question", (id) => {
+    const entry = suggestionBank.find((suggestion) => suggestion.id === id);
+    expect(entry?.sq.question).toMatch(/Shqipëri|shqiptar/);
+    expect(entry?.en.question).toMatch(/Albania(?:n)?/);
+  });
+
+  it("directs legal-help questions to the contact page rather than requesting phone numbers", () => {
+    const entry = suggestionBank.find((suggestion) => suggestion.id === "free_legal_help");
+    expect(entry?.sq.question).toContain("Më drejto te kontaktet");
+    expect(entry?.en.question).toContain("Link to the contacts");
+    for (const locale of ["sq", "en"] as const) {
+      expect(entry?.[locale].question).toContain("https://www.diaspora-zbarkon.com/siguria/");
+    }
+  });
+
+  it("asks about arrest rights without prescribing a name-only identification rule", () => {
+    const entry = suggestionBank.find((suggestion) => suggestion.id === "arrest_rights");
+    expect(entry?.sq.question).toContain("identifikimin, heshtjen dhe ndihmën e avokatit");
+    expect(entry?.en.question).toContain(
+      "identification requirements, remaining silent, and access to a lawyer",
     );
   });
 });

@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     #: an external HTTPS load balancer the balancer adds its own hop; set this to 1.
     flamingo_trusted_proxy_hops: int = Field(default=0, ge=0, le=4)
     flamingo_safety_salt: SecretStr | None = None
+    #: Enable in production only after the metrics TTL policy and request-log
+    #: exclusions are configured. Local test bundles use aggregate memory storage.
+    flamingo_widget_metrics_enabled: bool = False
+    flamingo_widget_metrics_daily_limit: int = Field(default=10_000, ge=1, le=100_000)
 
     model_config_path: Path = PROJECT_ROOT / "openai.yaml"
     source_catalog_path: Path = PROJECT_ROOT / "config" / "sources.yaml"

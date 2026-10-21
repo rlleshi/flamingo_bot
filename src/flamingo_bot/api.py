@@ -19,13 +19,14 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import Headers
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flamingo_bot.config import Settings, get_settings, load_model_config
 from flamingo_bot.errors import FlamingoBotError
+from flamingo_bot.metrics import METRICS_PATH, RETENTION_DAYS, InMemoryWidgetMetrics, WidgetMetric
 from flamingo_bot.models import ConversationTurn
 from flamingo_bot.ports import (
     AnswerGenerator,
@@ -35,9 +36,11 @@ from flamingo_bot.ports import (
     QueryPlanner,
     RequestQuota,
     VectorStore,
+    WidgetMetrics,
 )
 from flamingo_bot.providers.azure import AzureModelProvider
 from flamingo_bot.providers.firestore import FirestoreRequestQuota, FirestoreVectorStore
+from flamingo_bot.providers.widget_metrics import FirestoreWidgetMetrics
 from flamingo_bot.quota import InMemoryRequestQuota, QuotaWindow
 from flamingo_bot.rate_limit import RateLimiter
 from flamingo_bot.retrieval import ChatService
@@ -60,7 +63,19 @@ class ServiceBundle:
     query_planner: QueryPlanner | None = None
     passage_ranker: PassageRanker | None = None
     request_quota: RequestQuota | None = None
+    widget_metrics: WidgetMetrics | None = None
     closables: tuple[ClosableProvider, ...] = ()
+
+
+class MetricsAccessLogFilter(logging.Filter):
+    """Do not retain per-report IPs or timestamps in Uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            path = str(args[2]).split("?", 1)[0].rstrip("/")
+            return path != METRICS_PATH
+        return True
 
 
 class OriginGuardMiddleware:
@@ -196,6 +211,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        access_logger = logging.getLogger("uvicorn.access")
+        access_filter = MetricsAccessLogFilter()
+        access_logger.addFilter(access_filter)
         if services is None:
             model_config = load_model_config(runtime_settings.model_config_path)
             model_provider = AzureModelProvider(runtime_settings, model_config)
@@ -208,6 +226,11 @@ def create_app(
                 client_quota_window,
                 daily_quota_window,
             )
+            metrics = (
+                FirestoreWidgetMetrics(runtime_settings)
+                if runtime_settings.flamingo_widget_metrics_enabled
+                else None
+            )
             bundle = ServiceBundle(
                 embedder=model_provider,
                 vector_store=vector_store,
@@ -215,7 +238,9 @@ def create_app(
                 query_planner=model_provider,
                 passage_ranker=model_provider,
                 request_quota=request_quota,
-                closables=(model_provider, vector_store, request_quota),
+                widget_metrics=metrics,
+                closables=(model_provider, vector_store, request_quota)
+                + ((metrics,) if metrics is not None else ()),
             )
         else:
             bundle = services
@@ -239,9 +264,17 @@ def create_app(
         app.state.request_quota = bundle.request_quota or InMemoryRequestQuota(
             client_quota_window, daily_quota_window
         )
+        app.state.widget_metrics = bundle.widget_metrics or InMemoryWidgetMetrics(
+            runtime_settings.flamingo_widget_metrics_daily_limit
+        )
+        # These abuse keys are short-lived process memory, never analytics fields.
+        # A separate limiter means optional feedback cannot spend the chat quota.
+        app.state.metrics_limiter = RateLimiter(30, 60)
+        app.state.metrics_global_limiter = RateLimiter(120, 60)
         try:
             yield
         finally:
+            access_logger.removeFilter(access_filter)
             for closable in reversed(bundle.closables):
                 await closable.close()
 
@@ -265,7 +298,8 @@ def create_app(
         OriginGuardMiddleware,
         allowed_origins=runtime_settings.allowed_origins,
         require_origin_paths=(
-            ("/v1/chat",) if runtime_settings.flamingo_environment == "production" else ()
+            (METRICS_PATH,)
+            + (("/v1/chat",) if runtime_settings.flamingo_environment == "production" else ())
         ),
     )
     if runtime_settings.flamingo_widget_dir.is_dir():
@@ -279,6 +313,58 @@ def create_app(
     standalone_html = (
         standalone_page.read_text(encoding="utf-8") if standalone_page.is_file() else None
     )
+
+    @application.get("/privacy", response_class=HTMLResponse)
+    async def privacy() -> HTMLResponse:
+        page = runtime_settings.flamingo_widget_dir / "privacy.html"
+        if not page.is_file():
+            raise HTTPException(status_code=404, detail="privacy_page_unavailable")
+        return HTMLResponse(page.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
+
+    @application.get("/v1/widget-config")
+    async def widget_config() -> dict[str, object]:
+        return {
+            "metrics_enabled": runtime_settings.flamingo_widget_metrics_enabled,
+            "retention_days": RETENTION_DAYS,
+        }
+
+    @application.post(METRICS_PATH, status_code=204)
+    async def widget_metrics(request: Request) -> Response:
+        if not runtime_settings.flamingo_widget_metrics_enabled:
+            raise HTTPException(status_code=404, detail="metrics_disabled")
+        if request.query_params:
+            raise HTTPException(status_code=400, detail="metrics_query_not_allowed")
+        if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
+            raise HTTPException(status_code=415, detail="json_required")
+        limiter: RateLimiter = request.app.state.metrics_limiter
+        global_limiter: RateLimiter = request.app.state.metrics_global_limiter
+        if not await global_limiter.allow("all") or not await limiter.allow(
+            _client_key(request, runtime_settings.flamingo_trusted_proxy_hops)
+        ):
+            raise HTTPException(status_code=429, detail="metrics_rate_limit")
+        body = bytearray()
+        try:
+            async with asyncio.timeout(2):
+                async for part in request.stream():
+                    body.extend(part)
+                    if len(body) > 1024:
+                        raise HTTPException(status_code=413, detail="metrics_too_large")
+        except TimeoutError as exc:
+            raise HTTPException(status_code=408, detail="metrics_upload_timeout") from exc
+        try:
+            metric = WidgetMetric.model_validate_json(body)
+        except ValidationError as exc:
+            # No echoed input, event logging, user ID, request ID, or raw payload.
+            raise HTTPException(status_code=422, detail="invalid_metric") from exc
+        metrics: WidgetMetrics = request.app.state.widget_metrics
+        try:
+            async with asyncio.timeout(4):
+                accepted = await metrics.record(metric)
+        except (FlamingoBotError, TimeoutError) as exc:
+            raise HTTPException(status_code=503, detail="metrics_unavailable") from exc
+        if not accepted:
+            raise HTTPException(status_code=429, detail="metrics_daily_limit")
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
     @application.get("/", include_in_schema=False)
     async def standalone_chat() -> HTMLResponse:

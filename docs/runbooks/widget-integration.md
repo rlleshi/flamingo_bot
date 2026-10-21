@@ -76,10 +76,11 @@ backend answers each question independently again.
 
 ## Suggested questions
 
-An empty chat shows two distinct questions randomly selected from thirteen
+An empty chat shows four distinct questions in a 2×2 grid, randomly selected from nineteen
 curated, source-tested topics. They disappear after the first question and
-return after **New chat**. Merely displaying them makes no API request; clicking
-one submits it through the normal chat and quota path. The chip uses a short
+return after **New chat**. Clicking one submits it through the normal chat and quota path.
+When optional aggregate feedback is enabled, a visible display and a click also
+send the predefined suggestion IDs to the counter endpoint. The chip uses a short
 label, while the full submitted question is visible in the conversation.
 
 Event-specific starters include explicit dates in the submitted questions.
@@ -91,6 +92,54 @@ because the current model sometimes follows the language of retrieved Albanian
 sources instead of the visitor's question. Edit the bilingual bank in
 `frontend/src/lib/suggestions.ts` only after checking the proposed questions
 against the live corpus.
+
+## Aggregate feedback and ratings
+
+Four suggestion IDs are counted once when their grid is at least 99% visible
+in an active tab, not on component updates. A click counts selection intent,
+including when the subsequent answer fails. Completed, nonempty assistant
+answers offer **Helpful / Not helpful** (localized in Albanian). Welcome,
+failed, cancelled, and streaming answers cannot be rated. Each bubble permits
+one rating in browser memory; refreshing or opening another browser is not
+deduplicated because no persistent visitor identity is collected.
+
+The counter request contains only a fixed kind and allowlisted suggestion IDs
+or a binary rating. Ratings are overall totals, never linked to a question,
+answer, conversation, or request ID. No freely typed questions are analyzed for
+analytics. There are no analytics cookies, fingerprints, raw interaction records,
+or third-party analytics service. Do Not Track / Global Privacy Control disable
+this collection. Feedback failures do not block chat or trigger retries.
+
+`/privacy` is a standalone bilingual privacy page linked both in the widget and
+on its standalone landing page. It discloses suggestion counters, voluntary
+ratings, authorized operator access, rolling retention, deletion limitations,
+and the separate operational/security processing required to serve the bot.
+
+Daily UTC aggregates live in `flamingo-quotas/widget_metrics`, never in the
+knowledge corpus. A fixed expiry is set to UTC day-start plus 90 days, so later
+reports do not extend older data. Expired buckets disappear from private reports
+immediately; physical Firestore TTL deletion is asynchronous. Reports group the
+remaining totals by week and include per-suggestion exposure, clicks, and
+click-through rate. These are approximate counts, not unique people, causal
+preferences, or tamper-proof votes.
+
+Production collection defaults off until TTL and request-log exclusions are
+configured; see [deployment setup](gcp-deployment.md#3b-aggregate-widget-feedback).
+For local testing, set `FLAMINGO_WIDGET_METRICS_ENABLED=true`. An injected test
+service bundle uses in-memory aggregates; the normal app uses the quota Firestore
+database with the existing runtime identity.
+
+Authorized operators can read the private report without a public dashboard:
+
+```bash
+uv run python scripts/report_widget_metrics.py
+```
+
+Do not commit report output or export expired/raw records. Disabling collection
+does not delete unexpired totals; they age out through TTL. To remove all totals
+early, an authorized operator can delete only the `widget_metrics` collection
+in the quota database after confirming that exact target, without touching
+`request_quotas` or the corpus.
 
 ## Name and disclosure
 

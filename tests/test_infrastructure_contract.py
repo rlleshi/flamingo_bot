@@ -178,6 +178,15 @@ def test_production_image_defaults_to_non_root_runtime() -> None:
     assert "USER 10001" in dockerfile
 
 
+def test_optional_widget_feedback_is_explicitly_off_until_privacy_setup() -> None:
+    workflow = load_yaml(".github/workflows/deploy.yml")
+    assert workflow["env"]["WIDGET_METRICS_ENABLED"] == (
+        "${{ vars.FLAMINGO_WIDGET_METRICS_ENABLED || 'false' }}"
+    )
+    candidate = step_by_id(workflow_steps(), "candidate")
+    assert "FLAMINGO_WIDGET_METRICS_ENABLED=$WIDGET_METRICS_ENABLED" in candidate["run"]
+
+
 def test_environment_examples_are_portable_and_private() -> None:
     example = Path(".env.example").read_text(encoding="utf-8")
 

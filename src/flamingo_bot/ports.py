@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol
 
+from flamingo_bot.metrics import WidgetMetric
 from flamingo_bot.models import (
     ActiveGenerationSnapshot,
     ChunkRecord,
@@ -90,6 +91,10 @@ class RequestQuota(Protocol):
     async def consume(self, client_key: str) -> QuotaDecision:
         """Charge one request to the visitor allowance and the service-wide budget."""
         ...
+
+
+class WidgetMetrics(Protocol):
+    async def record(self, metric: WidgetMetric) -> bool: ...
 
 
 class ClosableProvider(Protocol):

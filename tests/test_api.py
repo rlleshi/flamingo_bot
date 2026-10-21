@@ -30,6 +30,7 @@ async def build_app(
     daily_quota: int = 100,
     trusted_proxy_hops: int = 0,
     request_quota: RequestQuota | None = None,
+    metrics_enabled: bool = False,
 ) -> tuple[FastAPI, ScriptedAnswerGenerator]:
     embedder = HashEmbedder()
     question = "What is Flamingo Revolution?"
@@ -55,6 +56,7 @@ async def build_app(
         flamingo_client_quota_requests=client_quota,
         flamingo_daily_quota_requests=daily_quota,
         flamingo_trusted_proxy_hops=trusted_proxy_hops,
+        flamingo_widget_metrics_enabled=metrics_enabled,
     )
     app = create_app(
         settings=settings,
@@ -432,3 +434,116 @@ async def test_widget_script_revalidates_but_media_is_cached_hard(tmp_path) -> N
 
     assert clip.status_code == 200
     assert "immutable" in clip.headers["cache-control"]
+
+
+@pytest.mark.asyncio
+async def test_widget_feedback_is_disabled_until_explicitly_enabled() -> None:
+    app, generator = await build_app()
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            config = await client.get("/v1/widget-config")
+            feedback = await client.post(
+                "/v1/widget-metrics",
+                headers={"Origin": "http://localhost:5173"},
+                json={"kind": "rated", "rating": "helpful"},
+            )
+    assert config.json() == {"metrics_enabled": False, "retention_days": 90}
+    assert feedback.status_code == 404
+    assert not generator.calls
+
+
+@pytest.mark.asyncio
+async def test_widget_feedback_counts_only_totals_and_does_not_spend_chat_quota() -> None:
+    app, generator = await build_app(metrics_enabled=True, client_quota=1)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            headers = {"Origin": "http://localhost:5173"}
+            for payload in (
+                {"kind": "shown", "suggestion_ids": ["movement", "diaspora", "pulsi", "dossier"]},
+                {"kind": "clicked", "suggestion_ids": ["movement"]},
+                {"kind": "rated", "rating": "helpful"},
+            ):
+                response = await client.post("/v1/widget-metrics", headers=headers, json=payload)
+                assert response.status_code == 204
+            assert not generator.calls
+            chat = await client.post("/v1/chat", json={"question": "What is Flamingo Revolution?"})
+            report = await app.state.widget_metrics.report()
+    assert chat.status_code == 200
+    assert report["suggestions"][0]["click_through_rate"] == 1
+    assert report["answer_ratings"] == {"helpful": 1, "not_helpful": 0}
+
+
+@pytest.mark.asyncio
+async def test_widget_feedback_requires_origin_rejects_extra_data_and_bounds_body(caplog) -> None:
+    app, _ = await build_app(metrics_enabled=True)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            payload = {"kind": "rated", "rating": "helpful"}
+            missing = await client.post("/v1/widget-metrics", json=payload)
+            forbidden = await client.post(
+                "/v1/widget-metrics", json=payload, headers={"Origin": "https://evil.example"}
+            )
+            private = await client.post(
+                "/v1/widget-metrics",
+                json={**payload, "question": "PRIVATE-MARKER"},
+                headers={"Origin": "http://localhost:5173"},
+            )
+            oversized = await client.post(
+                "/v1/widget-metrics",
+                content="x" * 1025,
+                headers={"Origin": "http://localhost:5173", "Content-Type": "application/json"},
+            )
+            query = await client.post(
+                "/v1/widget-metrics?question=PRIVATE-MARKER",
+                json=payload,
+                headers={"Origin": "http://localhost:5173"},
+            )
+    assert missing.status_code == forbidden.status_code == 403
+    assert private.status_code == 422
+    assert private.json() == {"detail": "invalid_metric"}
+    assert oversized.status_code == 413
+    assert query.status_code == 400
+    assert "PRIVATE-MARKER" not in private.text
+    assert "PRIVATE-MARKER" not in caplog.text
+
+
+def test_metrics_access_logs_are_filtered_without_removing_chat_logs() -> None:
+    import logging
+
+    from flamingo_bot.api import MetricsAccessLogFilter
+
+    access_filter = MetricsAccessLogFilter()
+    for path, allowed in (
+        ("/v1/widget-metrics", False),
+        ("/v1/widget-metrics/?anything=private", False),
+        ("/v1/chat", True),
+    ):
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            "",
+            0,
+            "%s %s %s %s %s",
+            ("private-client", "POST", path, "1.1", 204),
+            None,
+        )
+        assert access_filter.filter(record) is allowed
+
+
+@pytest.mark.asyncio
+async def test_privacy_page_is_available_without_an_origin(tmp_path) -> None:
+    (tmp_path / "privacy.html").write_text("<h1>Aggregate feedback privacy</h1>")
+    app, _ = await build_app(widget_dir=str(tmp_path))
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/privacy")
+    assert response.status_code == 200
+    assert "Aggregate feedback privacy" in response.text

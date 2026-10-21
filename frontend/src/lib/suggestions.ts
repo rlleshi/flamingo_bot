@@ -11,6 +11,7 @@ type Suggestion = {
 };
 
 export type SelectedSuggestion = { id: string } & LocalizedSuggestion;
+export const SUGGESTION_COUNT = 4;
 
 export const suggestionBank: readonly Suggestion[] = [
   {
@@ -131,18 +132,96 @@ export const suggestionBank: readonly Suggestion[] = [
         "What do sources report about police actions during the Tirana protests on 13–17 October 2026? Answer in English.",
     },
   },
+  {
+    id: "protest_safety",
+    sq: {
+      label: "Siguria në protestë?",
+      question:
+        "Si të qëndroj i sigurt dhe të largohem nga rreziku nëse një protestë në Shqipëri bëhet e dhunshme?",
+    },
+    en: {
+      label: "Stay safe at a protest?",
+      question:
+        "How can I stay safe and leave danger if a protest in Albania becomes violent? Answer in English.",
+    },
+  },
+  {
+    id: "free_legal_help",
+    sq: {
+      label: "Ku gjej avokat falas?",
+      question:
+        "Ku mund të gjej ndihmë juridike falas për protestuesit në Shqipëri? Më drejto te kontaktet në udhëzuesin e sigurisë të Diaspora Zbarkon: https://www.diaspora-zbarkon.com/siguria/.",
+    },
+    en: {
+      label: "Free legal-help contacts?",
+      question:
+        "Where can protesters in Albania find free legal help? Link to the contacts in Diaspora Zbarkon's safety guide at https://www.diaspora-zbarkon.com/siguria/. Answer in English.",
+    },
+  },
+  {
+    id: "arrest_rights",
+    sq: {
+      label: "Të drejtat kur arrestohem?",
+      question:
+        "Çfarë të drejtash kam sipas ligjit shqiptar nëse policia më ndalon ose arreston, përfshirë identifikimin, heshtjen dhe ndihmën e avokatit?",
+    },
+    en: {
+      label: "My rights if arrested?",
+      question:
+        "Under Albanian law, what are my rights if the police detain or arrest me, including identification requirements, remaining silent, and access to a lawyer? Answer in English.",
+    },
+  },
+  {
+    id: "protest_preparation",
+    sq: {
+      label: "Çfarë të marr në protestë?",
+      question:
+        "Çfarë duhet të marr me vete për të marrë pjesë në mënyrë paqësore dhe të sigurt në një protestë në Shqipëri?",
+    },
+    en: {
+      label: "What should I bring?",
+      question:
+        "What should I bring to participate peacefully and safely in a protest in Albania? Answer in English.",
+    },
+  },
+  {
+    id: "document_abuses",
+    sq: {
+      label: "Si të dokumentoj shkeljet?",
+      question:
+        "Si mund të dokumentoj në mënyrë të sigurt shkeljet gjatë një proteste në Shqipëri, duke mbrojtur privatësinë time dhe të të tjerëve?",
+    },
+    en: {
+      label: "Document abuses safely?",
+      question:
+        "How can I safely document abuses during a protest in Albania while protecting my privacy and other people's privacy? Answer in English.",
+    },
+  },
+  {
+    id: "detained_relative",
+    sq: {
+      label: "Familjar i ndaluar?",
+      question:
+        "Çfarë hapash mund të ndërmarr nëse një familjar ndalohet ose arrestohet gjatë një proteste në Shqipëri dhe ku mund të kërkoj ndihmë juridike?",
+    },
+    en: {
+      label: "A relative was detained?",
+      question:
+        "What steps can I take if a relative is detained or arrested during a protest in Albania, and where can I find legal help? Answer in English.",
+    },
+  },
 ];
 
-/** Pick two different prompts afresh when an empty chat opens. */
+/** Pick four different prompts in random positions when an empty chat opens. */
 export function selectSuggestions(
   pageLanguage: string,
   random: () => number = Math.random,
 ): SelectedSuggestion[] {
   const locale = /^en(?:-|$)/i.test(pageLanguage.trim()) ? "en" : "sq";
   const pool = [...suggestionBank];
-  for (let index = 0; index < 2; index += 1) {
+  for (let index = 0; index < SUGGESTION_COUNT; index += 1) {
     const swapIndex = index + Math.floor(random() * (pool.length - index));
     [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
   }
-  return pool.slice(0, 2).map((entry) => ({ id: entry.id, ...entry[locale] }));
+  return pool.slice(0, SUGGESTION_COUNT).map((entry) => ({ id: entry.id, ...entry[locale] }));
 }

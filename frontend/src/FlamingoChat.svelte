@@ -14,10 +14,11 @@
   import { afterUpdate, onDestroy, onMount, tick } from "svelte";
 
   import { buildHistory } from "./lib/history";
+  import { observeSuggestionDisplay, WidgetMetrics, type AnswerRating } from "./lib/metrics";
   import { refusalBubble, refusalMessage, refusalReason } from "./lib/refusal";
   import { parseRichText, type InlineNode } from "./lib/richtext";
   import { consumeEventStream, type ServerEvent } from "./lib/sse";
-  import { selectSuggestions, type SelectedSuggestion } from "./lib/suggestions";
+  import { selectSuggestions, SUGGESTION_COUNT, type SelectedSuggestion } from "./lib/suggestions";
 
   type Citation = {
     id: string;
@@ -32,8 +33,10 @@
     text: string;
     citations: Citation[];
     pending?: boolean;
+    completed?: boolean;
     failed?: boolean;
     excluded?: boolean;
+    rating?: AnswerRating;
   };
 
   const moduleDirectory = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
@@ -60,6 +63,8 @@
   let motionQuery: MediaQueryList | null = null;
   let messageSerial = 0;
   let suggestions: SelectedSuggestion[] = [];
+  let metrics: WidgetMetrics | null = null;
+  let metricsEnabled = false;
 
   // Albanian first, because it is the first signal that a visitor may write in
   // their own language. The blank line renders the two as separate paragraphs.
@@ -79,6 +84,36 @@
 
   const normalizedApiBase = () => apiBase.replace(/\/+$/, "");
   const mediaUrl = (name: string) => `${assetBase.replace(/\/+$/, "")}/${name}`;
+  const isEnglish = () => /^en(?:-|$)/i.test(document.documentElement.lang.trim());
+  const privacyUrl = () => `${normalizedApiBase()}/privacy`;
+
+  async function initializeMetrics() {
+    metrics ??= new WidgetMetrics(normalizedApiBase());
+    metricsEnabled = await metrics.initialize();
+  }
+
+  function suggestionDisplay(element: HTMLElement) {
+    const ids = suggestions.map((entry) => entry.id);
+    const dispose = observeSuggestionDisplay(element, () => {
+      void metrics?.record({ kind: "shown", suggestion_ids: ids });
+    });
+    return { destroy: dispose };
+  }
+
+  function chooseSuggestion(suggestion: SelectedSuggestion) {
+    if (submitting) return;
+    void metrics?.record({ kind: "clicked", suggestion_ids: [suggestion.id] });
+    void submitQuestion(suggestion.question);
+  }
+
+  function rateAnswer(message: Message, rating: AnswerRating) {
+    const current = messages.find((entry) => entry.id === message.id);
+    if (!current || current.role !== "assistant" || !current.completed || current.pending || current.failed ||
+        current.excluded || !current.text.trim() || current.rating) return;
+    // Only this in-memory bubble knows it was rated. No answer/request ID leaves it.
+    updateMessage(message.id, { rating });
+    void metrics?.record({ kind: "rated", rating });
+  }
 
   function safeSourceUrl(value: string): string | null {
     try {
@@ -133,6 +168,8 @@
       throw new Error(
         typeof event.data.code === "string" ? event.data.code : "stream_failed",
       );
+    } else if (event.event === "done") {
+      updateMessage(messageId, { completed: true });
     }
   }
 
@@ -212,6 +249,7 @@
 
   async function showDialog() {
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    void initializeMetrics();
     if (messages.length === 1) suggestions = selectSuggestions(document.documentElement.lang);
     open = true;
     await tick();
@@ -361,6 +399,18 @@
       Diella 2.0 është parodi e Diellës së qeverisë shqiptare dhe projekt i pavarur i Revolucionit
       Flamingo; nuk është shërbim shtetëror. Mesazhet dërgohen për përpunim, por historiku i bisedës
       mbahet vetëm në browserin tënd dhe nuk ruhet në serverin tonë.
+      {#if metricsEnabled}
+        {#if isEnglish()}
+          We keep only aggregate suggestion usage and answer ratings for up to 90 days,
+          without individual interaction histories.
+        {:else}
+          Mbajmë vetëm totalet e pyetjeve të sugjeruara të shfaqura/klikuara dhe vlerësimeve
+          të përgjigjeve, deri në 90 ditë; pa historik individual.
+        {/if}
+      {/if}
+      <a href={privacyUrl()} target="_blank" rel="noopener noreferrer">
+        {isEnglish() ? "Privacy" : "Privatësia"}
+      </a>
     </p>
 
     <div
@@ -397,14 +447,32 @@
               {/each}
             </ol>
           {/if}
+          {#if metricsEnabled && message.role === "assistant" && message.completed && !message.pending &&
+            !message.failed && !message.excluded && message.text.trim()}
+            <div class="answer-rating" role="group" aria-label={isEnglish()
+              ? "Was this answer helpful?" : "Ishte e dobishme kjo përgjigje?"}>
+              <button type="button" disabled={!!message.rating}
+                aria-pressed={message.rating === "helpful"}
+                on:click={() => rateAnswer(message, "helpful")}
+              >{isEnglish() ? "Helpful" : "E dobishme"}</button>
+              <button type="button" disabled={!!message.rating}
+                aria-pressed={message.rating === "not_helpful"}
+                on:click={() => rateAnswer(message, "not_helpful")}
+              >{isEnglish() ? "Not helpful" : "Jo e dobishme"}</button>
+              {#if message.rating}
+                <span role="status">{isEnglish() ? "Thanks!" : "Faleminderit!"}</span>
+              {/if}
+            </div>
+          {/if}
         </article>
       {/each}
     </div>
 
     <form on:submit|preventDefault={submit}>
       <label for="flamingo-question">Your question</label>
-      {#if messages.length === 1 && suggestions.length === 2}
+      {#if messages.length === 1 && suggestions.length === SUGGESTION_COUNT}
         <div
+          use:suggestionDisplay
           class="suggestions"
           role="group"
           aria-label={document.documentElement.lang.toLowerCase().startsWith("en")
@@ -416,7 +484,7 @@
               type="button"
               disabled={submitting}
               aria-label={suggestion.question}
-              on:click={() => void submitQuestion(suggestion.question)}
+              on:click={() => chooseSuggestion(suggestion)}
             >{suggestion.label}</button>
           {/each}
         </div>
@@ -511,7 +579,7 @@
   .dialog {
     position: relative;
     display: grid;
-    grid-template-rows: auto auto minmax(180px, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     width: min(430px, calc(100vw - 28px));
     height: min(700px, calc(100dvh - 36px));
     overflow: hidden;
@@ -790,6 +858,31 @@
   .suggestions button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+
+  .answer-rating {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--flamingo-muted);
+  }
+
+  .answer-rating button {
+    min-height: 36px;
+    padding: 5px 8px;
+    border: 1px solid #d8cfca;
+    border-radius: 8px;
+    background: white;
+    color: #6b2541;
+    font-size: inherit;
+  }
+
+  .answer-rating button[aria-pressed="true"] {
+    border-color: #a90f4a;
+    background: #fff0f6;
   }
 
   .composer {
