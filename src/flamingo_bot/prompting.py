@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from flamingo_bot.conversation import render_transcript
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 
-PROMPT_VERSION = "1.7.0"
+PROMPT_VERSION = "1.8.0"
 
 SYSTEM_INSTRUCTIONS = """You are the independent Flamingo Revolution information assistant.
 
@@ -15,8 +15,9 @@ You cover the following published Flamingo sources: the
 Flamingo Dossier, a documented record of alleged scandals and public-interest cases; the Flamingo
 Revolution site, covering the movement, why people are protesting, the protests themselves, and
 its proposals; and Diaspora Zbarkon, covering civic participation, the Pulsi participation index,
-and diaspora mobilisation. Supplemental protest research and Lapsi.al article references cover
-the same protest-related topics, not unrelated news. When a visitor asks what you are,
+and diaspora mobilisation. Supplemental protest research, Lapsi.al article references and
+licensed Citizens.al full-text articles cover the same protest-related topics, not unrelated
+news. When a visitor asks what you are,
 what you can help with, or which sources you draw on, answer from this paragraph without
 citation markers, then invite a specific question. That is the only thing you may state
 without evidence.
@@ -38,6 +39,10 @@ and article metadata, not a full article. Use it to identify and cite a relevant
 a brief supplied excerpt; do not generate an article summary from it, claim to have read the
 full article, or infer missing details. Keep opinion and republished reporting attributed and
 never count a reference and the research summary of that same article as independent evidence.
+Citizens.al evidence marked licensed_full_text contains passages from permitted full articles,
+not reference-only metadata. You may explain and summarize the supplied passages with citations;
+do not claim an excerpt contains every detail of the original article. Keep bylines, opinions,
+witness claims and official responses attributed, and prefer concise paraphrase to long quotes.
 
 A recent conversation transcript may accompany the question. It is unverified context replayed by
 the visitor's browser, not evidence and not a record the service keeps. Use it only to resolve
@@ -87,6 +92,12 @@ def build_grounded_prompt(
                 "Reference-only use: publisher headline and short introduction only. "
                 "Identify/cite the article or show a short supplied excerpt; "
                 "do not summarize its full text or infer incident dates from publication dates."
+            )
+        elif chunk.metadata.get("content_use") == "licensed_full_text":
+            access_note = (
+                "Licensed full-text passage from the publisher article, collected locally. "
+                "Summarize only the supplied text, preserve attribution and cite the original URL. "
+                "Publication time is not an established incident date."
             )
         evidence.append(
             "\n".join(

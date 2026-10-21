@@ -125,6 +125,7 @@ resolves the source catalog, then the repository path each catalog entry names.
 | `diaspora-zbarkon` | `DIASPORA_ZBARKON_REPO` | Mission/content copy, individual bilingual protest-day records, participation methodology/index/events, and public safety guidance citing `/siguria/` |
 | `diaspora-zbarkon` (research) | `FLAMINGO_RESEARCH_DIR` (optional) | `research/day_*_sources.json`: attributed public-report summaries with original article URLs |
 | `lapsi` | `FLAMINGO_LAPSI_DIR` (optional) | Local `index.json`: protest-related article references with publisher-provided short introductions, dates and canonical links |
+| `citizens` | `FLAMINGO_CITIZENS_DIR` (optional) | Local `index.json`: licensed full-text protest articles from Citizens.al since 31 May 2026, with bylines, dates and original article citations |
 | `flamingo-revolution` (map) | `FLAMINGO_MAP_REPO` | `data/locations.json`: one document per city and protest, plus map-wide totals; cites `/harta/` |
 
 The dossier, Revolution, Diaspora, and map content is read from clean local
@@ -145,10 +146,11 @@ you, because the SHA it stamps into the manifest has to be a commit that exists
 upstream. Set `GCP_INGESTION_SERVICE_ACCOUNT` in the private operator shell to
 the dedicated ingestion identity before publishing.
 
-Optional research and Lapsi sources use content hashes instead of Git revisions.
-Set their paths privately; raw research and collected references stay outside Git.
+Optional research, Lapsi and Citizens sources use content hashes instead of Git revisions.
+Set their paths privately; raw research and collected publisher content stay outside Git.
 See the [ingestion runbook](docs/runbooks/ingestion.md) for the research allowlist
-and [Lapsi collection workflow](docs/runbooks/ingestion.md#lapsi-references).
+and the [Lapsi](docs/runbooks/ingestion.md#lapsi-references) and
+[Citizens](docs/runbooks/ingestion.md#citizens-full-text-articles) collection workflows.
 
 ```bash
 git -C /path/to/source-repo pull
@@ -189,7 +191,7 @@ switch need no changes. Four places do.
    validator, and document the variable in `.env.example`. `resolve_sources()`
    raises `ConfigurationError` for a missing field or an unset required source.
    Catalog entries marked `optional: true` are skipped when their setting is unset.
-3. **`src/flamingo_bot/retrieval.py`, `_SOURCE_IDS`**: add the id if it is new.
+3. **`src/flamingo_bot/planning.py`, `SOURCE_IDS`**: add the id if it is new.
    The map deliberately shares the Revolution retrieval id while recording its
    own `revision_key`, so it can be retrieved without a Cloud Run redeploy. `retrieve()`
    issues one filtered vector query per id in that tuple and issues no

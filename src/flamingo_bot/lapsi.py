@@ -311,8 +311,11 @@ def extract_reference(page: str, url: str, *, captured_at: datetime) -> ArticleR
 
 
 class RobotsPolicy:
-    def __init__(self, text: str) -> None:
-        self.parser = RobotFileParser(ROBOTS_URL)
+    def __init__(
+        self, text: str, *, robots_url: str = ROBOTS_URL, user_agent: str = USER_AGENT
+    ) -> None:
+        self.user_agent = user_agent
+        self.parser = RobotFileParser(robots_url)
         self.parser.parse(text.splitlines())
         self.signals: dict[str, str] = {}
         raw_rules: list[tuple[list[str], str, bool]] = []
@@ -330,7 +333,7 @@ class RobotsPolicy:
                 agents.append(value.casefold())
                 continue
             has_directive = True
-            applies = any(agent == "*" or agent in USER_AGENT.casefold() for agent in agents)
+            applies = any(agent == "*" or agent in user_agent.casefold() for agent in agents)
             if key.casefold() in {"allow", "disallow"} and applies:
                 raw_rules.append((list(agents), value, key.casefold() == "allow" or not value))
             if key.casefold() == "content-signal" and applies:
@@ -357,7 +360,7 @@ class RobotsPolicy:
             max(
                 len(agent) if agent != "*" else 0
                 for agent in group
-                if agent == "*" or agent in USER_AGENT.casefold()
+                if agent == "*" or agent in user_agent.casefold()
             )
             for group, _, _ in raw_rules
         ]
@@ -386,8 +389,8 @@ class RobotsPolicy:
 
     @property
     def delay(self) -> float:
-        delay = float(self.parser.crawl_delay(USER_AGENT) or 0)
-        rate = self.parser.request_rate(USER_AGENT)
+        delay = float(self.parser.crawl_delay(self.user_agent) or 0)
+        rate = self.parser.request_rate(self.user_agent)
         if rate is not None:
             if rate.requests < 1:
                 raise ValueError("The robots request rate must allow at least one request")

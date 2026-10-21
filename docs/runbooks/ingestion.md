@@ -7,7 +7,8 @@
 2. Inspect their changes and commit them. Ingestion never performs `git pull` and
    refuses a repository with tracked or untracked working-tree changes.
    Update optional research indexes in `FLAMINGO_RESEARCH_DIR` and collect
-   [Lapsi references](#lapsi-references) locally before ingestion. These non-Git
+   [Lapsi references](#lapsi-references) and
+   [Citizens articles](#citizens-full-text-articles) locally before ingestion. These non-Git
    sources use content fingerprints checked again after parsing.
 3. Run the dry-run and review counts, revisions, skips, and failures.
 4. Publish only with the dedicated GCP ingestion identity.
@@ -31,15 +32,15 @@ embeddings, stages a complete new generation, validates count and representative
 vector lookups across sources, and activates it transactionally.
 
 Serving requires both the base `embedding` vector index and the compound
-`source_id` plus `embedding` index in `READY` state. Retrieval gathers up to seven
-candidates per source, applies a `0.65` cosine-distance threshold, and passes at
-most seven diversified chunks to Luna. Translations of one protest day deduplicate;
-distinct days remain eligible. Short generic escalation questions gain movement
-and current-month search context, double the candidate pool, exclude matches more
-than 0.18 behind the best distance, and use a bounded 0.08 recency bonus decaying
-over 30 days. Named places, dates and day numbers retain their scope. The answer
-model sees the original question; filing/publication dates never become incident
-dates, and recorded cosine distances are unchanged.
+`source_id` plus `embedding` index in `READY` state. A bounded query plan uses
+the latest question and browser-replayed context, with up to two semantic routes.
+Retrieval gathers up to seven candidates per source and route (14 for a recent
+plan), applies a `0.65` cosine-distance threshold, and merges/deduplicates a pool
+of at most 20 passages. Explicit publisher, date, protest-day and aggregate
+anchors can recover relevant records. The independent reranker selects at most
+seven passages for the answer model; duplicates are not corroboration. Named
+places/dates retain their scope, and publication timestamps never become incident
+dates. The answer model still receives the original question.
 
 The staged generation and `ingestion_runs/{generation_id}` audit record persist
 source revisions and coverage, parser/chunker/normalization versions, embedding
@@ -74,6 +75,9 @@ it cannot overwrite a colliding generation created by another publisher.
 - Lapsi.al: optional `index.json` under `FLAMINGO_LAPSI_DIR`, containing only
   protest-related references and short publisher-provided introductions.
   See [collection, recovery and serving requirements](#lapsi-references).
+- Citizens.al: optional `index.json` under `FLAMINGO_CITIZENS_DIR`, containing
+  licensed full-text protest articles published since 31 May 2026. Every chunk
+  retains its byline, publication timestamp and original article URL.
 - One-time snapshots: 17 dated Referendum 21/2024 pages and two topic records
   covering the author's Reddit Pulsi analysis under `content/snapshots/`.
   Routine ingestion never re-fetches these sites. Review any intentional
@@ -91,9 +95,9 @@ filing dates stay separate from explicitly recorded incident dates.
 - Explicit code-only exclusions: `src/data/referendum.ts`, `src/data/navIcons.ts`,
   and `src/data/socialIcons.ts` in the Revolution site.
 
-Adding a new retrieval ID touches the catalog, `Settings`, retrieval's
-`_SOURCE_IDS`, and sometimes a parser. The README's "Adding a new source"
-section is the checklist; omitting a distinct ID from `_SOURCE_IDS` ingests and
+Adding a new retrieval ID touches the catalog, `Settings`, planning's
+`SOURCE_IDS`, and sometimes a parser. The README's "Adding a new source"
+section is the checklist; omitting a distinct ID from `SOURCE_IDS` ingests and
 bills the source without ever retrieving it.
 
 Use the dry-run report and `ingestion_runs` audit records to review generation
@@ -160,6 +164,62 @@ After reviewing the snapshot, use the normal ingestion dry-run/publish commands
 above. The backend must be released once with the new `lapsi` retrieval ID before
 the deployed bot can search this source. Later data-only updates need no app
 deployment. No new cloud resource, index, model deployment or workflow is needed.
+
+## Citizens full-text articles
+
+The project owner confirmed permission to index Citizens.al full articles.
+This permission applies to Citizens, not to Lapsi. The collector uses the
+unauthenticated [WordPress posts API](https://citizens.al/wp-json/wp/v2/posts),
+including rendered article bodies and embedded author/category metadata; it
+never requests drafts, private posts, passwords, admin pages or blocked feeds.
+Only protest-related reporting published from **31 May 2026** (Tirana local
+midnight) through the scan time is eligible. Topic scores are relevance rules,
+not popularity, independent verification or proof of a claim.
+Selection requires a movement/protected-area link or civic/student-protest and
+rights-reporting context. Unrelated local disputes and incidental mentions of
+protests in general news do not qualify. This is a bounded, rule-based selection,
+not a claim that every relevant article has been discovered.
+
+Set `FLAMINGO_CITIZENS_DIR=.local/citizens` in the private `.env`, then run:
+
+```bash
+uv run python scripts/snapshot_citizens.py --dry-run --pretty
+uv run python scripts/snapshot_citizens.py --write --pretty
+uv run python -m flamingo_bot.ingest --dry-run --pretty
+GCP_IMPERSONATE_SERVICE_ACCOUNT="$GCP_INGESTION_SERVICE_ACCOUNT" \
+  uv run python -m flamingo_bot.ingest --publish --pretty
+```
+
+The first scan backfills the approved date range. Later scans request new or
+modified posts since the last successful checkpoint with a 48-hour overlap;
+historical articles remain in the index. A full reconciliation occurs after
+30 days or with `--full-rescan`, detecting withdrawn/deleted articles as well as
+edits and changed relevance. An incremental scan alone cannot detect deletions.
+Publication timestamps remain separate from incident dates, and opinions/witness
+claims/official responses remain attributed. Citations link to the original
+Citizens article, never to a local snapshot or API response.
+
+`--output` overrides the private snapshot directory; update the setting too.
+`--max-articles` defaults to 5,000 posts checked. Reaching that limit, inconsistent
+pagination, malformed relevant content, HTTP errors or a changed crawl policy
+abort rather than saving a partial result. Retry the scan after fixing the cause.
+No model calls, Firestore writes or recurring schedule occur during collection.
+
+The collector checks [robots.txt](https://citizens.al/robots.txt) every run and
+waits at least **10 seconds** between requests, including redirects; longer
+published delays take precedence. It does not bypass access restrictions.
+Only cleaned article content enters retrieval, not page navigation or executable
+HTML. Snapshots and checkpoints are gitignored; only `index.json` is fingerprinted
+for ingestion. Unchanged articles retain their revision/capture timestamp to
+avoid unnecessary embeddings. A writer lock, complete pagination validation,
+atomic file replacement and an index/checkpoint digest protect incremental
+state; interruption between saves triggers a full reconciliation next time.
+
+The new parser is versioned `citizens-article/1`, preserving embedding reuse for
+unaffected sources. Normal ingestion publishes a **complete generation containing
+all configured sources**, never a Citizens-only replacement. Release the backend
+once with the new `citizens` retrieval ID and licensed-text grounding instructions;
+subsequent data-only updates need no backend deployment or new cloud resource.
 
 ## Failure handling
 

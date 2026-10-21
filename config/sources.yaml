@@ -127,3 +127,18 @@ sources:
       - parser: lapsi_reference
         include:
           - index.json
+
+  # Full text is permitted by the project owner's confirmed reuse permission.
+  # The local checkpoint and collected publisher content are never committed.
+  - id: citizens
+    label: Citizens.al
+    repository_setting: flamingo_citizens_dir
+    revision_key: citizens-articles
+    versioning: content_hash
+    optional: true
+    language: sq
+    base_url: https://citizens.al/
+    rules:
+      - parser: citizens_article
+        include:
+          - index.json

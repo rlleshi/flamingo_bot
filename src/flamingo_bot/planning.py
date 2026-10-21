@@ -16,8 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from flamingo_bot.conversation import render_transcript
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 
-RETRIEVAL_VERSION = "2.0.0"
-SOURCE_IDS = ("flamingo-dossier", "flamingo-revolution", "diaspora-zbarkon", "lapsi")
+RETRIEVAL_VERSION = "2.1.0"
+SOURCE_IDS = ("flamingo-dossier", "flamingo-revolution", "diaspora-zbarkon", "lapsi", "citizens")
 MAX_CANDIDATES = 20
 MAX_ANCHORS = 16
 MAX_METADATA_QUERIES = 8
@@ -122,7 +122,7 @@ a plausible interpretation, not repeat the first. Do not answer or treat premise
 ANCHOR_INSTRUCTIONS = """
 Also identify exact retrieval anchors. Publisher prefixes must name outlets actually requested
 by the visitor (resolve a follow-up to that outlet when explicit); do not add outlets of your
-own. Use standard names, e.g. Reuters, Associated Press, Le Monde, BBC or Lapsi.al. Dates are
+own. Use standard names, e.g. Reuters, Associated Press, BBC, Lapsi.al or Citizens.al. Dates are
 ISO dates explicitly requested, including unambiguous relative dates in the conversation;
 never use an as-of hint as an incident date. Protest days must likewise be explicitly requested,
 not invented from model memory. Return empty lists when no such anchors are requested.
@@ -275,6 +275,7 @@ def deduplicate(chunks: Sequence[RetrievedChunk]) -> list[RetrievedChunk]:
             "protest-research",
             "lapsi-reference",
             "public-news",
+            "citizens-article",
         }
         if key in seen or (article and item.canonical_url in seen_urls):
             continue

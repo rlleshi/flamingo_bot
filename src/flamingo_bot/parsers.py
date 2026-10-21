@@ -18,6 +18,7 @@ import yaml
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from flamingo_bot.citizens import read_article_index
 from flamingo_bot.config import PROJECT_ROOT
 from flamingo_bot.lapsi import read_reference_index
 from flamingo_bot.models import IngestionIssue, SourceDocument
@@ -537,6 +538,62 @@ def _parse_lapsi_references(source: ResolvedSource, path: Path) -> list[SourceDo
                 ),
             },
             identity_suffix=article.key,
+        )
+        documents.append(document.model_copy(update={"revision": article.revision}))
+    return documents
+
+
+def _parse_citizens_articles(source: ResolvedSource, path: Path) -> list[SourceDocument]:
+    relative_path = path.relative_to(source.repository_path).as_posix()
+    documents = []
+    for article in read_article_index(path).articles:
+        genre = (
+            "opinion"
+            if any(
+                name.casefold() in {
+                    "opinion", "opinione", "editorial", "analizë", "analiza", "blog"
+                }
+                for name in article.categories
+            )
+            else "reporting"
+        )
+        sticky = (
+            f"Publisher: Citizens.al\nArticle: {article.title}\nByline: {article.author}\n"
+            f"Publication timestamp: {article.published_at}; not an established incident date.\n"
+            f"Licensed full-text article excerpt; genre: {genre}. Preserve attribution."
+        )
+        document = _base_document(
+            source,
+            relative_path,
+            article.title,
+            article.body,
+            "article",
+            canonical_url=article.url,
+            sticky_context=sticky,
+            legal_status=(
+                "Attributed publisher reporting or opinion, not independently verified findings. "
+                "Distinguish reported allegations, witness accounts and official responses."
+            ),
+            metadata={
+                "record_id": f"citizens:{article.post_id}",
+                "parser_format": "citizens-article/1",
+                "source_kind": "citizens-article",
+                "publisher": "Citizens.al",
+                "content_use": article.content_use,
+                "evidence_access": "full_text",
+                "permission_basis": article.permission_basis,
+                "published_at": article.published_at,
+                "published_date": article.published_at[:10],
+                "modified_at": article.modified_at,
+                "captured_at": article.captured_at,
+                "author": article.author,
+                "categories": article.categories,
+                "tags": article.tags,
+                "topics": article.topics,
+                "relevance_score": article.relevance_score,
+                "article_genre": genre,
+            },
+            identity_suffix=str(article.post_id),
         )
         documents.append(document.model_copy(update={"revision": article.revision}))
     return documents
@@ -1062,6 +1119,8 @@ def parse_sources(
                         documents.extend(_parse_research(source, path))
                     elif rule.parser == "lapsi_reference":
                         documents.extend(_parse_lapsi_references(source, path))
+                    elif rule.parser == "citizens_article":
+                        documents.extend(_parse_citizens_articles(source, path))
                     elif rule.parser == "map_json":
                         documents.extend(_parse_map_locations(source, path))
                     else:
