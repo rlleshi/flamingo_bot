@@ -60,17 +60,23 @@ project owner approved this reuse for the bot. The local SVG is bundled into the
 widget as a data URL, with no extra asset request, dependency, or ingestion step.
 Hosts with an explicit image CSP must allow `data:` in `img-src` for this mark.
 
-The emblem is 38px tall in a 44px dark badge, preserving its aspect ratio, with a
-pink rim and soft side halo around the launcher. Pink is deliberate and does not
-inherit the general `--flamingo-accent`; Diaspora overrides that accent with its
-site red. Existing host labels, keyboard behavior and minimum 54px touch target
-are preserved. At phone width only the badge is shown, as before.
+The emblem is 38px tall in a 44px dark badge, preserving its aspect ratio, inside
+a rounded speech bubble with a small lower-right tail, a pink rim and soft side
+halo. Pink is deliberate and does not inherit the general `--flamingo-accent`;
+Diaspora overrides that accent with its site red. Existing host labels, keyboard
+behavior and minimum 54px touch target
+are preserved. At phone width the text label is hidden, but the bubble and tail
+remain visible around the badge. The button announces that it opens a dialog;
+the emblem and CSS tail are decorative.
 
-One 1.25-second sheen plays on initial appearance and on deliberate hover/focus,
-not continuously or on unrelated UI updates. It stops when the chat opens, the
-tab becomes hidden, or reduced motion is enabled. Reduced-motion visitors keep
-the static pink halo without the sheen. There are no animation timers, counters,
-visitor identifiers, model calls, or new analytics events.
+Two gentle 3px bobs (1.8 seconds total) and one 1.25-second sheen play on initial
+appearance and on deliberate hover/focus, not continuously or on unrelated UI
+updates. The shorter sheen cannot end the bob animation early. Motion stops
+when the chat opens, the tab becomes hidden, or reduced motion is enabled, and
+does not replay on automatic focus restoration after closing. Reduced-motion
+visitors keep the static bubble and pink halo. There are no fake unread/typing
+indicators, animation timers, counters, visitor identifiers, model calls, or new
+analytics events.
 
 This design lives in the bot repository; the target integration is Diaspora
 Zbarkon. No host repository is changed. The mark remains a decorative `.mark`

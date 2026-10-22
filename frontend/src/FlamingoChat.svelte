@@ -58,7 +58,7 @@
   let errorMessage = "";
   let submitting = false;
   let prefersReducedMotion = false;
-  let launcherShimmering = false;
+  let launcherAttention = false;
   let inputElement: HTMLTextAreaElement;
   let dialogElement: HTMLElement;
   let launcherElement: HTMLButtonElement;
@@ -262,7 +262,7 @@
   }
 
   async function showDialog() {
-    launcherShimmering = false;
+    launcherAttention = false;
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void initializeMetrics();
     void refreshAnswerCount();
@@ -279,6 +279,8 @@
     await tick();
     if (launcherElement) launcherElement.focus();
     else previousFocus?.focus();
+    // Restoring focus after closing is not a new invitation to animate.
+    launcherAttention = false;
   }
 
   function focusableElements(): HTMLElement[] {
@@ -321,25 +323,32 @@
 
   function updateMotionPreference(event: MediaQueryListEvent | MediaQueryList) {
     prefersReducedMotion = event.matches;
-    if (prefersReducedMotion) launcherShimmering = false;
+    if (prefersReducedMotion) launcherAttention = false;
   }
 
-  function shimmerLauncher() {
+  function animateLauncher() {
     if (!prefersReducedMotion && !open && document.visibilityState === "visible") {
-      launcherShimmering = true;
+      launcherAttention = true;
     }
   }
 
-  function stopHiddenShimmer() {
-    if (document.visibilityState !== "visible") launcherShimmering = false;
+  function finishLauncherAttention(event: AnimationEvent) {
+    // Svelte scopes keyframe names. Ignore the shorter sheen, pseudo-elements,
+    // and child animations so the two bobs can finish before resetting.
+    if (event.target === event.currentTarget && !event.pseudoElement &&
+        /(?:^|-)launcher-bob$/.test(event.animationName)) launcherAttention = false;
+  }
+
+  function stopHiddenAttention() {
+    if (document.visibilityState !== "visible") launcherAttention = false;
   }
 
   onMount(() => {
     motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     updateMotionPreference(motionQuery);
     motionQuery.addEventListener("change", updateMotionPreference);
-    document.addEventListener("visibilitychange", stopHiddenShimmer);
-    shimmerLauncher();
+    document.addEventListener("visibilitychange", stopHiddenAttention);
+    animateLauncher();
   });
 
   afterUpdate(() => {
@@ -351,7 +360,7 @@
   onDestroy(() => {
     abortController?.abort();
     motionQuery?.removeEventListener("change", updateMotionPreference);
-    document.removeEventListener("visibilitychange", stopHiddenShimmer);
+    document.removeEventListener("visibilitychange", stopHiddenAttention);
   });
 </script>
 
@@ -547,12 +556,13 @@
     </form>
   </dialog>
 {:else}
-  <button bind:this={launcherElement} class="launcher" class:shimmer={launcherShimmering}
+  <button bind:this={launcherElement} class="launcher" class:attention={launcherAttention}
     type="button" on:click={showDialog} aria-label={buttonLabel}
-    on:mouseenter={shimmerLauncher} on:focus={shimmerLauncher}
-    on:animationend={() => launcherShimmering = false}>
+    aria-haspopup="dialog"
+    on:mouseenter={animateLauncher} on:focus={animateLauncher}
+    on:animationend={finishLauncherAttention}>
     <span class="mark" aria-hidden="true" style:background-image={flamingoMarkBackground}></span>
-    <span>{buttonLabel}</span>
+    <span class="launcher-label">{buttonLabel}</span>
   </button>
 {/if}
 
@@ -600,41 +610,69 @@
     min-height: 54px;
     padding: 4px 18px 4px 4px;
     border: 1px solid #ff72bd;
-    border-radius: 999px;
+    border-radius: 24px 24px 8px 24px;
     background: var(--flamingo-ink);
     box-shadow:
       0 0 0 3px rgb(255 114 189 / 10%),
       -7px 0 22px rgb(255 114 189 / 22%),
       7px 0 22px rgb(217 35 102 / 20%),
       0 12px 34px rgb(33 30 28 / 24%);
-    overflow: hidden;
+    overflow: visible;
     color: white;
     font-weight: 750;
+  }
+
+  .launcher::before {
+    content: "";
+    position: absolute;
+    right: 12px;
+    bottom: -4px;
+    width: 12px;
+    height: 12px;
+    border-right: 1px solid #ff72bd;
+    border-bottom: 1px solid #ff72bd;
+    border-bottom-right-radius: 3px;
+    background: var(--flamingo-ink);
+    transform: rotate(45deg);
+    pointer-events: none;
   }
 
   .launcher::after {
     content: "";
     position: absolute;
-    inset: 0 auto 0 0;
-    width: 45%;
+    inset: 0;
+    border-radius: inherit;
     background: linear-gradient(110deg, transparent, rgb(255 187 222 / 32%), transparent);
+    background-size: 50% 100%;
+    background-repeat: no-repeat;
+    background-position: -100% 0;
     opacity: 0;
-    transform: translateX(-180%) skewX(-18deg);
     pointer-events: none;
   }
 
-  .launcher.shimmer::after {
+  .launcher.attention {
+    animation: launcher-bob 0.9s ease-in-out 2;
+  }
+
+  .launcher.attention::after {
     animation: launcher-sheen 1.25s ease-out 1;
   }
 
+  @keyframes launcher-bob {
+    0%, 100% { transform: translateY(0); }
+    40% { transform: translateY(-3px); }
+    70% { transform: translateY(0); }
+  }
+
   @keyframes launcher-sheen {
-    0% { opacity: 0; transform: translateX(-180%) skewX(-18deg); }
+    0% { opacity: 0; background-position: -100% 0; }
     20% { opacity: 0.8; }
     75% { opacity: 0.8; }
-    100% { opacity: 0; transform: translateX(360%) skewX(-18deg); }
+    100% { opacity: 0; background-position: 200% 0; }
   }
 
   .mark {
+    position: relative;
     flex: 0 0 44px;
     width: 44px;
     height: 44px;
@@ -1031,7 +1069,7 @@
       border-radius: 18px;
     }
 
-    .launcher span:last-child {
+    .launcher-label {
       display: none;
     }
 
@@ -1041,6 +1079,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .launcher,
     .launcher::after {
       animation: none !important;
     }

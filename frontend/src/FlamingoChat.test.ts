@@ -155,7 +155,16 @@ describe("lifetime answer count UI", () => {
   });
 });
 
-describe("Flamingo launcher and pink halo", () => {
+describe("Flamingo speech-bubble launcher and pink halo", () => {
+  function finishAnimation(target: Element, name = "svelte-test-launcher-bob", pseudoElement = "") {
+    const event = new Event("animationend", { bubbles: true });
+    Object.defineProperties(event, {
+      animationName: { value: name },
+      pseudoElement: { value: pseudoElement },
+    });
+    target.dispatchEvent(event);
+  }
+
   async function mountLauncher(reducedMotion: boolean) {
     const changeListeners: ((event: { matches: boolean }) => void)[] = [];
     const removeMotionListener = vi.fn();
@@ -186,55 +195,68 @@ describe("Flamingo launcher and pink halo", () => {
   it("uses the project vector mark, preserves its accessible host label and makes no initial API call", async () => {
     const { launcher, fetcher } = await mountLauncher(true);
     expect(launcher.getAttribute("aria-label")).toBe("Pyet Flamingon");
+    expect(launcher.getAttribute("aria-haspopup")).toBe("dialog");
     expect(launcher.type).toBe("button");
     const mark = launcher.querySelector<HTMLElement>(".mark")!;
     expect(mark.getAttribute("aria-hidden")).toBe("true");
     expect(mark.textContent).toBe("");
     expect(mark.style.backgroundImage, mark.outerHTML).toMatch(/^url\(/);
-    expect(launcher.textContent).toContain("Pyet Flamingon");
+    expect(launcher.querySelector(".launcher-label")?.textContent).toBe("Pyet Flamingon");
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("shimmers once on appearance and can repeat on deliberate hover or keyboard focus", async () => {
+  it("finishes its bounded attention animation and can replay on deliberate hover or keyboard focus", async () => {
     const { launcher } = await mountLauncher(false);
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
-    launcher.dispatchEvent(new Event("animationend", { bubbles: true }));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
+    finishAnimation(launcher);
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(false));
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
-    launcher.dispatchEvent(new Event("animationend", { bubbles: true }));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
+    finishAnimation(launcher, "launcher-bob");
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(false));
     launcher.focus();
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
   });
 
-  it("never starts shimmer for reduced motion and responds when the preference changes", async () => {
+  it("does not let the shorter sheen, pseudo-elements, or children end the two bobs early", async () => {
+    const { launcher } = await mountLauncher(false);
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
+    finishAnimation(launcher, "svelte-test-launcher-sheen", "::after");
+    finishAnimation(launcher.querySelector(".mark")!);
+    finishAnimation(launcher, "launcher-bob", "::before");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(launcher.classList.contains("attention")).toBe(true);
+    finishAnimation(launcher);
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(false));
+  });
+
+  it("never starts motion for reduced motion and responds when the preference changes", async () => {
     const { launcher, changeListeners } = await mountLauncher(true);
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
     launcher.focus();
-    expect(launcher.classList.contains("shimmer")).toBe(false);
+    expect(launcher.classList.contains("attention")).toBe(false);
     changeListeners[0]({ matches: false });
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
     changeListeners[0]({ matches: true });
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(false));
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
-    expect(launcher.classList.contains("shimmer")).toBe(false);
+    expect(launcher.classList.contains("attention")).toBe(false);
   });
 
   it("stops in a hidden tab and does not automatically restart on unrelated updates", async () => {
     const { launcher } = await mountLauncher(false);
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(false));
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
-    expect(launcher.classList.contains("shimmer")).toBe(false);
+    expect(launcher.classList.contains("attention")).toBe(false);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
-    expect(launcher.classList.contains("shimmer")).toBe(false);
+    expect(launcher.classList.contains("attention")).toBe(false);
     launcher.dispatchEvent(new MouseEvent("mouseenter"));
-    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    await vi.waitFor(() => expect(launcher.classList.contains("attention")).toBe(true));
   });
 
   it("keeps opening/closing and focus restoration working, and removes listeners on unmount", async () => {
@@ -245,6 +267,7 @@ describe("Flamingo launcher and pink halo", () => {
     expect(root.querySelector(".launcher")).toBeNull();
     (root.querySelector(".close") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(root.activeElement).toBe(root.querySelector(".launcher")));
+    expect(root.querySelector(".launcher")?.classList.contains("attention")).toBe(false);
     element.remove();
     await vi.waitFor(() => expect(removeMotionListener).toHaveBeenCalledOnce());
     expect(removeListener.mock.calls.some(([name]) => name === "visibilitychange")).toBe(true);
