@@ -147,6 +147,10 @@ The compact counter under the composer shows an approximate lifetime number of
 completed replies, localized to Albanian or English. All embeds and the
 standalone page read the same production aggregate. It is not a count of unique
 visitors, conversations, HTTP requests, widget loads, or individual model calls.
+Its label reads "Diella 2.0 ka dhënë ≈N përgjigje deri tani." in Albanian and
+"Diella 2.0 has answered ≈N questions so far." in English, with the dynamic number
+bold and highlighted in the Flamingo accent. The approximation marker remains
+visible; the sentence wraps naturally on narrow screens.
 Follow-ups count once; replaying earlier conversation turns does not recount them.
 A completed no-evidence reply counts too. Empty, failed, and cancelled streams
 are not intentionally counted. A disconnect after generation/counting can still

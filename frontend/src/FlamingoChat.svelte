@@ -519,8 +519,9 @@
         <p class="answer-count" title={isEnglish()
           ? "Approximate lifetime total of completed replies, including an estimate of earlier usage. Not unique visitors."
           : "Totali i përafërt i përgjigjeve të përfunduara, me një vlerësim të përdorimit të hershëm. Jo vizitorë unikë."}>
-          {answerCount.approximate ? "≈" : ""}{new Intl.NumberFormat(isEnglish() ? "en" : "sq").format(answerCount.answered)}
-          {isEnglish() ? "questions answered" : "pyetje me përgjigje"}
+          {isEnglish() ? "Diella 2.0 has answered" : "Diella 2.0 ka dhënë"}{" "}<strong>
+            {answerCount.approximate ? "≈" : ""}{new Intl.NumberFormat(isEnglish() ? "en" : "sq").format(answerCount.answered)}
+          </strong>{" "}{isEnglish() ? "questions so far." : "përgjigje deri tani."}
         </p>
       {/if}
     </form>
@@ -616,6 +617,12 @@
     line-height: 1.35;
     text-align: center;
     font-variant-numeric: tabular-nums;
+  }
+
+  .answer-count strong {
+    color: var(--flamingo-accent);
+    font-weight: 750;
+    white-space: nowrap;
   }
 
   .header {

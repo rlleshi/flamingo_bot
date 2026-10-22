@@ -111,10 +111,12 @@ describe("lifetime answer count UI", () => {
   it("loads on open and uses the authoritative completed-answer total without polling", async () => {
     const { root, fetcher } = await openWidget();
     await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("370"));
-    expect(root.querySelector(".answer-count")?.textContent).toContain("questions answered");
-    expect(root.querySelector(".answer-count")?.textContent).toContain("≈");
+    expect(root.querySelector(".answer-count")?.textContent?.replace(/\s+/g, " ").trim())
+      .toBe("Diella 2.0 has answered ≈370 questions so far.");
+    expect(root.querySelector(".answer-count strong")?.textContent?.trim()).toBe("≈370");
     (root.querySelector(".suggestions button") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("371"));
+    expect(root.querySelector(".answer-count strong")?.textContent?.trim()).toBe("≈371");
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/v1/answer-count"))).toHaveLength(1);
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/v1/chat"))).toHaveLength(1);
   });
@@ -122,7 +124,9 @@ describe("lifetime answer count UI", () => {
   it("localizes the compact label and keeps it independent of optional feedback", async () => {
     document.documentElement.lang = "sq";
     const { root, reports } = await openWidget(false, false);
-    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("pyetje me përgjigje"));
+    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent?.replace(/\s+/g, " ").trim())
+      .toBe("Diella 2.0 ka dhënë ≈370 përgjigje deri tani."));
+    expect(root.querySelector(".answer-count strong")?.textContent?.trim()).toBe("≈370");
     expect(root.querySelector(".answer-count")?.getAttribute("title")).toContain("Jo vizitorë unikë");
     expect(reports()).toEqual([]);
   });
