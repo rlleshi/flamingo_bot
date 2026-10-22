@@ -51,6 +51,33 @@ closes with Escape, exposes streamed text through a live region, validates
 source-link protocols, and renders the static poster when the visitor prefers
 reduced motion. The video element is mounted only while the dialog is open.
 
+### Launcher appearance
+
+The launcher uses the existing project Flamingo emblem, adapted from
+`flamingo-revolution-site/public/images/flamingo-mark-dark.svg`: original emblem
+geometry is retained, small lettering omitted, and the viewBox cropped. The
+project owner approved this reuse for the bot. The local SVG is bundled into the
+widget as a data URL, with no extra asset request, dependency, or ingestion step.
+Hosts with an explicit image CSP must allow `data:` in `img-src` for this mark.
+
+The emblem is 38px tall in a 44px dark badge, preserving its aspect ratio, with a
+pink rim and soft side halo around the launcher. Pink is deliberate and does not
+inherit the general `--flamingo-accent`; Diaspora overrides that accent with its
+site red. Existing host labels, keyboard behavior and minimum 54px touch target
+are preserved. At phone width only the badge is shown, as before.
+
+One 1.25-second sheen plays on initial appearance and on deliberate hover/focus,
+not continuously or on unrelated UI updates. It stops when the chat opens, the
+tab becomes hidden, or reduced motion is enabled. Reduced-motion visitors keep
+the static pink halo without the sheen. There are no animation timers, counters,
+visitor identifiers, model calls, or new analytics events.
+
+This design lives in the bot repository; the target integration is Diaspora
+Zbarkon. No host repository is changed. The mark remains a decorative `.mark`
+background, so a host that explicitly overrides its background with `!important`
+can retain its own icon. Existing FlamingoRevolution.eu overrides are outside
+this change's scope.
+
 An answer is rendered as paragraphs, bullet and numbered lists, bold, and
 italic. That subset is fixed by the model prompt and by
 `frontend/src/lib/richtext.ts`, which must be changed together. Parsing produces

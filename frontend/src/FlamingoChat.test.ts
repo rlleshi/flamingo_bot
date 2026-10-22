@@ -154,3 +154,99 @@ describe("lifetime answer count UI", () => {
     expect(root.querySelector(".error")).toBeNull();
   });
 });
+
+describe("Flamingo launcher and pink halo", () => {
+  async function mountLauncher(reducedMotion: boolean) {
+    const changeListeners: ((event: { matches: boolean }) => void)[] = [];
+    const removeMotionListener = vi.fn();
+    vi.stubGlobal("matchMedia", () => ({
+      matches: reducedMotion,
+      addEventListener: (_: string, listener: (event: { matches: boolean }) => void) => {
+        changeListeners.push(listener);
+      },
+      removeEventListener: removeMotionListener,
+    }));
+    // Opening the preview is local-only, with optional feedback disabled.
+    const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.endsWith("/v1/widget-config") ? { metrics_enabled: false } : { answered: null, approximate: true },
+    )));
+    vi.stubGlobal("fetch", fetcher);
+    const element = document.createElement("flamingo-chat");
+    element.setAttribute("button-label", "Pyet Flamingon");
+    element.setAttribute("api-base", "https://bot.example");
+    // Match Diaspora's red theme override. The halo/logo retain their own pink.
+    element.style.setProperty("--flamingo-accent", "#b91c1c");
+    document.body.append(element);
+    await vi.waitFor(() => expect(element.shadowRoot?.querySelector(".launcher")).not.toBeNull());
+    const root = element.shadowRoot!;
+    const launcher = root.querySelector<HTMLButtonElement>(".launcher")!;
+    return { element, root, launcher, changeListeners, removeMotionListener, fetcher };
+  }
+
+  it("uses the project vector mark, preserves its accessible host label and makes no initial API call", async () => {
+    const { launcher, fetcher } = await mountLauncher(true);
+    expect(launcher.getAttribute("aria-label")).toBe("Pyet Flamingon");
+    expect(launcher.type).toBe("button");
+    const mark = launcher.querySelector<HTMLElement>(".mark")!;
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(mark.textContent).toBe("");
+    expect(mark.style.backgroundImage, mark.outerHTML).toMatch(/^url\(/);
+    expect(launcher.textContent).toContain("Pyet Flamingon");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("shimmers once on appearance and can repeat on deliberate hover or keyboard focus", async () => {
+    const { launcher } = await mountLauncher(false);
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    launcher.dispatchEvent(new Event("animationend", { bubbles: true }));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    launcher.dispatchEvent(new Event("animationend", { bubbles: true }));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    launcher.focus();
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+  });
+
+  it("never starts shimmer for reduced motion and responds when the preference changes", async () => {
+    const { launcher, changeListeners } = await mountLauncher(true);
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    launcher.focus();
+    expect(launcher.classList.contains("shimmer")).toBe(false);
+    changeListeners[0]({ matches: false });
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    changeListeners[0]({ matches: true });
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(launcher.classList.contains("shimmer")).toBe(false);
+  });
+
+  it("stops in a hidden tab and does not automatically restart on unrelated updates", async () => {
+    const { launcher } = await mountLauncher(false);
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(false));
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(launcher.classList.contains("shimmer")).toBe(false);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(launcher.classList.contains("shimmer")).toBe(false);
+    launcher.dispatchEvent(new MouseEvent("mouseenter"));
+    await vi.waitFor(() => expect(launcher.classList.contains("shimmer")).toBe(true));
+  });
+
+  it("keeps opening/closing and focus restoration working, and removes listeners on unmount", async () => {
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    const { element, root, launcher, removeMotionListener } = await mountLauncher(false);
+    launcher.click();
+    await vi.waitFor(() => expect(root.querySelector("dialog")).not.toBeNull());
+    expect(root.querySelector(".launcher")).toBeNull();
+    (root.querySelector(".close") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.activeElement).toBe(root.querySelector(".launcher")));
+    element.remove();
+    await vi.waitFor(() => expect(removeMotionListener).toHaveBeenCalledOnce());
+    expect(removeListener.mock.calls.some(([name]) => name === "visibilitychange")).toBe(true);
+  });
+});

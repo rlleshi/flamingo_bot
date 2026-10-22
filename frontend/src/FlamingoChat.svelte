@@ -13,6 +13,7 @@
 <script lang="ts">
   import { afterUpdate, onDestroy, onMount, tick } from "svelte";
 
+  import flamingoMarkUrl from "./assets/flamingo-mark.svg?inline";
   import { fetchAnswerCount, mergeAnswerCount, type AnswerCount } from "./lib/answerCount";
   import { buildHistory } from "./lib/history";
   import { observeSuggestionDisplay, WidgetMetrics, type AnswerRating } from "./lib/metrics";
@@ -44,6 +45,9 @@
   const defaultAssetBase = `${moduleDirectory}media/`;
   const moduleUrl = new URL(import.meta.url);
   const defaultApiBase = `${moduleUrl.protocol}//${moduleUrl.host}`;
+  // Vite's SVG data URL uses literal apostrophes. Escape them for consistent
+  // CSS URL parsing, without fetching the mark or inserting SVG as HTML.
+  const flamingoMarkBackground = `url("${flamingoMarkUrl.replace(/'/g, "%27")}")`;
 
   export let apiBase = defaultApiBase;
   export let assetBase = defaultAssetBase;
@@ -54,6 +58,7 @@
   let errorMessage = "";
   let submitting = false;
   let prefersReducedMotion = false;
+  let launcherShimmering = false;
   let inputElement: HTMLTextAreaElement;
   let dialogElement: HTMLElement;
   let launcherElement: HTMLButtonElement;
@@ -257,6 +262,7 @@
   }
 
   async function showDialog() {
+    launcherShimmering = false;
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void initializeMetrics();
     void refreshAnswerCount();
@@ -315,12 +321,25 @@
 
   function updateMotionPreference(event: MediaQueryListEvent | MediaQueryList) {
     prefersReducedMotion = event.matches;
+    if (prefersReducedMotion) launcherShimmering = false;
+  }
+
+  function shimmerLauncher() {
+    if (!prefersReducedMotion && !open && document.visibilityState === "visible") {
+      launcherShimmering = true;
+    }
+  }
+
+  function stopHiddenShimmer() {
+    if (document.visibilityState !== "visible") launcherShimmering = false;
   }
 
   onMount(() => {
     motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     updateMotionPreference(motionQuery);
     motionQuery.addEventListener("change", updateMotionPreference);
+    document.addEventListener("visibilitychange", stopHiddenShimmer);
+    shimmerLauncher();
   });
 
   afterUpdate(() => {
@@ -332,6 +351,7 @@
   onDestroy(() => {
     abortController?.abort();
     motionQuery?.removeEventListener("change", updateMotionPreference);
+    document.removeEventListener("visibilitychange", stopHiddenShimmer);
   });
 </script>
 
@@ -527,8 +547,11 @@
     </form>
   </dialog>
 {:else}
-  <button bind:this={launcherElement} class="launcher" type="button" on:click={showDialog} aria-label={buttonLabel}>
-    <span class="mark" aria-hidden="true">F</span>
+  <button bind:this={launcherElement} class="launcher" class:shimmer={launcherShimmering}
+    type="button" on:click={showDialog} aria-label={buttonLabel}
+    on:mouseenter={shimmerLauncher} on:focus={shimmerLauncher}
+    on:animationend={() => launcherShimmering = false}>
+    <span class="mark" aria-hidden="true" style:background-image={flamingoMarkBackground}></span>
     <span>{buttonLabel}</span>
   </button>
 {/if}
@@ -570,29 +593,56 @@
   }
 
   .launcher {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
     min-height: 54px;
-    padding: 7px 18px 7px 8px;
-    border: 0;
+    padding: 4px 18px 4px 4px;
+    border: 1px solid #ff72bd;
     border-radius: 999px;
     background: var(--flamingo-ink);
-    box-shadow: 0 12px 34px rgb(33 30 28 / 24%);
+    box-shadow:
+      0 0 0 3px rgb(255 114 189 / 10%),
+      -7px 0 22px rgb(255 114 189 / 22%),
+      7px 0 22px rgb(217 35 102 / 20%),
+      0 12px 34px rgb(33 30 28 / 24%);
+    overflow: hidden;
     color: white;
     font-weight: 750;
   }
 
+  .launcher::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 45%;
+    background: linear-gradient(110deg, transparent, rgb(255 187 222 / 32%), transparent);
+    opacity: 0;
+    transform: translateX(-180%) skewX(-18deg);
+    pointer-events: none;
+  }
+
+  .launcher.shimmer::after {
+    animation: launcher-sheen 1.25s ease-out 1;
+  }
+
+  @keyframes launcher-sheen {
+    0% { opacity: 0; transform: translateX(-180%) skewX(-18deg); }
+    20% { opacity: 0.8; }
+    75% { opacity: 0.8; }
+    100% { opacity: 0; transform: translateX(360%) skewX(-18deg); }
+  }
+
   .mark {
-    display: grid;
-    width: 40px;
-    height: 40px;
-    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
-    background: var(--flamingo-accent);
-    font-family: Georgia, serif;
-    font-size: 23px;
-    font-style: italic;
+    background-color: #281b26;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: auto 38px;
   }
 
   .dialog {
@@ -986,11 +1036,15 @@
     }
 
     .launcher {
-      padding-right: 8px;
+      padding: 4px;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .launcher::after {
+      animation: none !important;
+    }
+
     *,
     *::before,
     *::after {
