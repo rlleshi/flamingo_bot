@@ -232,6 +232,64 @@ cross-browser deduplication are deliberately absent.
 The owner-only report command and privacy disclosure are documented in
 [widget integration](widget-integration.md#aggregate-feedback-and-ratings).
 
+## 3c. Lifetime answer total
+
+The public number uses the existing quota database and runtime permissions, not
+the read-only knowledge corpus. No new GCP resource or identity is needed.
+`FLAMINGO_ANSWER_COUNTER_ENABLED` defaults to `true` in the deployment workflow;
+set the repository variable to `false` and redeploy to stop counting and hide it.
+This is separate from optional 90-day suggestion/rating collection.
+
+Before the first release, reconcile historical usage and choose a conservative
+baseline. Do not confuse widget-script loads, all HTTP traffic, or pre-model quota
+charges with completed answers. An HTTP 200 can still contain a failed or aborted
+SSE stream, and historical tests may be indistinguishable from visitor questions.
+Use only non-overlapping time windows when combining an older verified report
+with retained logs. If logs have expired, document the remaining uncertainty and
+keep the public approximation marker. Store private audit evidence outside Git.
+
+With an authorized operator identity scoped to the quota database, preview first:
+
+```bash
+uv run python scripts/initialize_answer_count.py \
+  --baseline "$ANSWER_COUNT_BASELINE" \
+  --baseline-as-of "$ANSWER_COUNT_BASELINE_AS_OF" --dry-run
+```
+
+The timestamp must be ISO-8601 with a timezone and no later than now. The preview
+is read-only. It reports the proposed baseline and any existing total, without
+printing project identifiers or credentials. Only after release approval, run
+the same command with `--initialize` instead of `--dry-run`, immediately before
+promoting the first counter-enabled revision. It creates exactly
+`flamingo-quotas/service_totals/answers`; an existing document is never overwritten
+even if initialization races another operator. Do not put initialization in
+every deployment or retry an ambiguous create/increment blindly: read the total
+first. Never reset or reseed a running counter during rollback/redeployment.
+
+The document contains only `answered`, `baseline`, `baseline_as_of`, and
+`initialized_at`. There is no per-answer timestamp or identifier, TTL, new
+backfill pipeline, or conversation storage. The public route exports only the
+number and approximation flag. Feedback TTL must remain limited to
+`widget_metrics`, not this lifetime aggregate. An authorized operator may remove
+this exact document after disabling collection; do not delete the quota database
+or neighboring collections.
+
+Until initialized, the production widget hides the counter and answers still
+work. Candidate-tag smoke requests do not increment it. Development/tests use
+memory even with production data credentials, so local testing cannot inflate
+the shared total. Replies served on an old revision between the historical
+snapshot and promotion are not automatically counted; accepting that small gap
+is conservative, or the operator can update the proposed baseline before the
+one-time initialization. Do not add a full historical snapshot on top of a live
+counter: that would double-count traffic.
+
+After release, check the public `GET /v1/answer-count` scalar and a canonical-host
+chat completion's `done.answer_count`. The fresh value should increase once;
+other open widgets only refresh on reopening and can serve a briefly cached
+value. A counter outage must not turn a valid answer into a failure. See the
+[widget contract](widget-integration.md#public-lifetime-answer-total) for caching,
+privacy, completion boundaries and best-effort limitations.
+
 ## 4. First ingestion and local verification
 
 Run the local dry-run first:

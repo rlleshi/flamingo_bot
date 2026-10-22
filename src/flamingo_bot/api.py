@@ -24,8 +24,14 @@ from starlette.datastructures import Headers
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from flamingo_bot.answer_count import (
+    ANSWER_COUNT_PATH,
+    AnswerCounterStore,
+    CachedAnswerCounter,
+    InMemoryAnswerCounter,
+)
 from flamingo_bot.config import Settings, get_settings, load_model_config
-from flamingo_bot.errors import FlamingoBotError
+from flamingo_bot.errors import FlamingoBotError, ProviderError
 from flamingo_bot.metrics import METRICS_PATH, RETENTION_DAYS, InMemoryWidgetMetrics, WidgetMetric
 from flamingo_bot.models import ConversationTurn
 from flamingo_bot.ports import (
@@ -38,6 +44,7 @@ from flamingo_bot.ports import (
     VectorStore,
     WidgetMetrics,
 )
+from flamingo_bot.providers.answer_count import FirestoreAnswerCounter
 from flamingo_bot.providers.azure import AzureModelProvider
 from flamingo_bot.providers.firestore import FirestoreRequestQuota, FirestoreVectorStore
 from flamingo_bot.providers.widget_metrics import FirestoreWidgetMetrics
@@ -64,6 +71,7 @@ class ServiceBundle:
     passage_ranker: PassageRanker | None = None
     request_quota: RequestQuota | None = None
     widget_metrics: WidgetMetrics | None = None
+    answer_counter: AnswerCounterStore | None = None
     closables: tuple[ClosableProvider, ...] = ()
 
 
@@ -231,6 +239,12 @@ def create_app(
                 if runtime_settings.flamingo_widget_metrics_enabled
                 else None
             )
+            answer_counter = (
+                FirestoreAnswerCounter(runtime_settings)
+                if runtime_settings.flamingo_answer_counter_enabled
+                and runtime_settings.flamingo_environment == "production"
+                else None
+            )
             bundle = ServiceBundle(
                 embedder=model_provider,
                 vector_store=vector_store,
@@ -239,8 +253,10 @@ def create_app(
                 passage_ranker=model_provider,
                 request_quota=request_quota,
                 widget_metrics=metrics,
+                answer_counter=answer_counter,
                 closables=(model_provider, vector_store, request_quota)
-                + ((metrics,) if metrics is not None else ()),
+                + ((metrics,) if metrics is not None else ())
+                + ((answer_counter,) if answer_counter is not None else ()),
             )
         else:
             bundle = services
@@ -266,6 +282,9 @@ def create_app(
         )
         app.state.widget_metrics = bundle.widget_metrics or InMemoryWidgetMetrics(
             runtime_settings.flamingo_widget_metrics_daily_limit
+        )
+        app.state.answer_counter = CachedAnswerCounter(
+            bundle.answer_counter or InMemoryAnswerCounter()
         )
         # These abuse keys are short-lived process memory, never analytics fields.
         # A separate limiter means optional feedback cannot spend the chat quota.
@@ -327,6 +346,30 @@ def create_app(
             "metrics_enabled": runtime_settings.flamingo_widget_metrics_enabled,
             "retention_days": RETENTION_DAYS,
         }
+
+    @application.get(ANSWER_COUNT_PATH)
+    async def answer_count(request: Request) -> JSONResponse:
+        """Public scalar only. Reads never draw down the paid-model quota."""
+        value = None
+        if runtime_settings.flamingo_answer_counter_enabled:
+            counter: CachedAnswerCounter = request.app.state.answer_counter
+            try:
+                value = await counter.read()
+            except Exception as exc:
+                # An optional statistic must not expose provider errors or break
+                # chat. The cache bounds failing reads as well as successful ones.
+                logger.warning("answer_count_unavailable error=%s", type(exc).__name__)
+                return JSONResponse(
+                    {"answered": None, "approximate": True},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return JSONResponse(
+            value.model_dump() if value is not None else {"answered": None, "approximate": True},
+            # Combined with the 45-second process cache, the public display can
+            # lag other instances by about a minute, not two cache windows.
+            headers={"Cache-Control": "public, max-age=15"},
+        )
 
     @application.post(METRICS_PATH, status_code=204)
     async def widget_metrics(request: Request) -> Response:
@@ -446,9 +489,27 @@ def create_app(
                 citation_count = len(citations)
                 for citation in citations:
                     yield _sse("citation", citation.model_dump())
+                nonempty = False
                 async for delta in answer:
+                    nonempty = nonempty or bool(delta.strip())
                     yield _sse("delta", {"text": delta})
-                yield _sse("done", {"request_id": request_id})
+                if not nonempty:
+                    raise ProviderError("Empty answer stream")
+                completion: dict[str, object] = {"request_id": request_id}
+                # Candidate smoke checks and local development must not inflate
+                # the shared total. Canonical production requests (including
+                # manual checks there) count like any other completed answer.
+                is_candidate = (request.url.hostname or "").startswith("candidate---")
+                if runtime_settings.flamingo_answer_counter_enabled and not is_candidate:
+                    counter: CachedAnswerCounter = request.app.state.answer_counter
+                    try:
+                        total = await counter.increment()
+                        completion["answer_count"] = total.model_dump()
+                    except Exception as exc:
+                        # No retry: a timed-out increment may already have landed.
+                        # Keep the answer successful and omit the fresh statistic.
+                        logger.warning("answer_count_update_failed error=%s", type(exc).__name__)
+                yield _sse("done", completion)
                 logger.info(
                     "chat_completed request_id=%s duration_ms=%d citations=%d history_turns=%d",
                     request_id,

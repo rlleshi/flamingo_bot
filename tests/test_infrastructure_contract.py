@@ -138,6 +138,9 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     assert workflow_env["SERVICE"] == contract["cloud_run"]["service"]
     assert workflow_env["DATABASE"] == contract["firestore"]["database_id"]
     assert workflow_env["REPOSITORY"] == contract["artifact_registry"]["repository"]
+    assert workflow_env["ANSWER_COUNTER_ENABLED"] == (
+        "${{ vars.FLAMINGO_ANSWER_COUNTER_ENABLED || 'true' }}"
+    )
 
     assert auth["uses"] == "google-github-actions/auth@v3"
     assert "workload_identity_provider" in auth["with"]
@@ -152,12 +155,14 @@ def test_deployment_uses_wif_and_smokes_candidate_before_traffic_promotion() -> 
     assert "gcloud run services list" in service_state_run
     assert "SERVICE_EXISTS" in candidate["env"]
     assert "--no-traffic" in candidate_run
-    assert 'deploy_args+=(--no-traffic)' in candidate_run
+    assert "deploy_args+=(--no-traffic)" in candidate_run
     assert "bootstrap=true" in candidate_run
     assert "--format=json" in candidate_run
-    assert "select(.tag == \"candidate\")" in candidate_run
+    assert 'select(.tag == "candidate")' in candidate_run
     assert f"--tag {contract['cloud_run']['candidate_tag']}" in candidate_run
     assert "--allow-unauthenticated" in candidate_run
+    assert "FLAMINGO_ANSWER_COUNTER_ENABLED=$ANSWER_COUNTER_ENABLED" in candidate_run
+    assert "initialize_answer_count" not in candidate_run
     assert "evals/smoke.yaml" in smoke_run
     assert "--to-revisions" in promote_run
     assert "=100" in promote_run

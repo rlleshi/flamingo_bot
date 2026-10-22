@@ -58,6 +58,19 @@ passage selection, and GPT-6.1 Sol `low` for answers.
 Embeddings remain `text-embedding-3-large` with 1,024 dimensions; changing the
 rewrite model does not require re-ingestion.
 
+## Public answer total
+
+The widget can show an approximate lifetime count of completed replies, shared
+across its standalone page and third-party embeds. Counting is server-side, with
+briefly cached reads and an immediate authoritative update after your answer.
+No conversation content or visitor identifier is stored for this total. It is
+separate from the 90-day optional suggestion/rating statistics.
+
+Production requires a create-only historical baseline; localhost/tests use
+memory and never change the shared total. See the
+[widget contract](docs/runbooks/widget-integration.md#public-lifetime-answer-total)
+and [initialization runbook](docs/runbooks/gcp-deployment.md#3c-lifetime-answer-total).
+
 ## Requirements
 
 - Python 3.12 and `uv` 0.11.8

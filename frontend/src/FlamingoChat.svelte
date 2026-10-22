@@ -13,6 +13,7 @@
 <script lang="ts">
   import { afterUpdate, onDestroy, onMount, tick } from "svelte";
 
+  import { fetchAnswerCount, mergeAnswerCount, type AnswerCount } from "./lib/answerCount";
   import { buildHistory } from "./lib/history";
   import { observeSuggestionDisplay, WidgetMetrics, type AnswerRating } from "./lib/metrics";
   import { refusalBubble, refusalMessage, refusalReason } from "./lib/refusal";
@@ -65,6 +66,7 @@
   let suggestions: SelectedSuggestion[] = [];
   let metrics: WidgetMetrics | null = null;
   let metricsEnabled = false;
+  let answerCount: AnswerCount | null = null;
 
   // Albanian first, because it is the first signal that a visitor may write in
   // their own language. The blank line renders the two as separate paragraphs.
@@ -86,6 +88,12 @@
   const mediaUrl = (name: string) => `${assetBase.replace(/\/+$/, "")}/${name}`;
   const isEnglish = () => /^en(?:-|$)/i.test(document.documentElement.lang.trim());
   const privacyUrl = () => `${normalizedApiBase()}/privacy`;
+
+  async function refreshAnswerCount() {
+    const base = normalizedApiBase();
+    const value = await fetchAnswerCount(base);
+    if (base === normalizedApiBase()) answerCount = mergeAnswerCount(answerCount, value);
+  }
 
   async function initializeMetrics() {
     metrics ??= new WidgetMetrics(normalizedApiBase());
@@ -170,6 +178,7 @@
       );
     } else if (event.event === "done") {
       updateMessage(messageId, { completed: true });
+      answerCount = mergeAnswerCount(answerCount, event.data.answer_count);
     }
   }
 
@@ -250,6 +259,7 @@
   async function showDialog() {
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void initializeMetrics();
+    void refreshAnswerCount();
     if (messages.length === 1) suggestions = selectSuggestions(document.documentElement.lang);
     open = true;
     await tick();
@@ -505,6 +515,14 @@
         </button>
       </div>
       {#if errorMessage}<p class="error" role="alert">{errorMessage}</p>{/if}
+      {#if answerCount !== null}
+        <p class="answer-count" title={isEnglish()
+          ? "Approximate lifetime total of completed replies, including an estimate of earlier usage. Not unique visitors."
+          : "Totali i përafërt i përgjigjeve të përfunduara, me një vlerësim të përdorimit të hershëm. Jo vizitorë unikë."}>
+          {answerCount.approximate ? "≈" : ""}{new Intl.NumberFormat(isEnglish() ? "en" : "sq").format(answerCount.answered)}
+          {isEnglish() ? "questions answered" : "pyetje me përgjigje"}
+        </p>
+      {/if}
     </form>
   </dialog>
 {:else}
@@ -589,6 +607,15 @@
     border-radius: 24px;
     background: var(--flamingo-paper);
     box-shadow: 0 24px 80px rgb(33 30 28 / 28%);
+  }
+
+  .answer-count {
+    margin: 7px 0 0;
+    color: var(--flamingo-muted);
+    font-size: 11px;
+    line-height: 1.35;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .header {

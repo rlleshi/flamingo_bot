@@ -141,6 +141,45 @@ early, an authorized operator can delete only the `widget_metrics` collection
 in the quota database after confirming that exact target, without touching
 `request_quotas` or the corpus.
 
+## Public lifetime answer total
+
+The compact counter under the composer shows an approximate lifetime number of
+completed replies, localized to Albanian or English. All embeds and the
+standalone page read the same production aggregate. It is not a count of unique
+visitors, conversations, HTTP requests, widget loads, or individual model calls.
+Follow-ups count once; replaying earlier conversation turns does not recount them.
+A completed no-evidence reply counts too. Empty, failed, and cancelled streams
+are not intentionally counted. A disconnect after generation/counting can still
+prevent the final completion event from reaching the browser: generation, not a
+proof of human receipt, is the completion boundary.
+
+`GET /v1/answer-count` exposes only `answered` and `approximate`. The backend caches
+reads for 45 seconds per process (including missing/unavailable records) and the
+HTTP response for 15 seconds, so another instance's display can lag by about one
+minute. Opening the widget fetches this value. A successful answer carries the
+authoritative new total in its SSE `done.answer_count` payload; the browser does
+not add one locally. An older cached response cannot roll the display back.
+There is no polling, subscription, browser-side Firestore access, public write
+endpoint, per-answer history, or extra model call.
+
+The runtime atomically increments `flamingo-quotas/service_totals/answers` only
+after a nonempty stream finishes. Production candidate-tag URLs are excluded;
+manual checks on the canonical production URL count like any other completed
+reply. Local development and injected test providers use memory and cannot alter
+the production total. Optional suggestion/rating settings and DNT/GPC do not
+control this anonymous server-side service total.
+
+Storage retains one scalar plus baseline/initialization metadata for the life
+of the service, without `expires_at`; the separate feedback collection still
+expires after 90 days. Provider operations are bounded, writes disable SDK
+retries, and a counter failure never turns a completed answer into a chat error.
+An ambiguous write may have committed; it must not be retried blindly. The total
+is intentionally approximate, not an exactly-once or billing-grade ledger.
+Missing or invalid totals are hidden rather than fabricated as zero. The bilingual
+privacy page discloses the purpose, public visibility, retention and controls.
+
+See [one-time initialization and release controls](gcp-deployment.md#3c-lifetime-answer-total).
+
 ## Name and disclosure
 
 The assistant is called **Diella - Flamingo Style**. The name deliberately

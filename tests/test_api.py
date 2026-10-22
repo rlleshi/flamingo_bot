@@ -1,3 +1,5 @@
+import asyncio
+import json
 from typing import Literal
 
 import httpx2
@@ -5,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.routing import Mount
 
+from flamingo_bot.answer_count import AnswerCounterStore, InMemoryAnswerCounter
 from flamingo_bot.api import ServiceBundle, create_app
 from flamingo_bot.config import Settings
 from flamingo_bot.errors import ProviderError
@@ -31,6 +34,8 @@ async def build_app(
     trusted_proxy_hops: int = 0,
     request_quota: RequestQuota | None = None,
     metrics_enabled: bool = False,
+    answer_counter: AnswerCounterStore | None = None,
+    counter_enabled: bool = True,
 ) -> tuple[FastAPI, ScriptedAnswerGenerator]:
     embedder = HashEmbedder()
     question = "What is Flamingo Revolution?"
@@ -57,6 +62,7 @@ async def build_app(
         flamingo_daily_quota_requests=daily_quota,
         flamingo_trusted_proxy_hops=trusted_proxy_hops,
         flamingo_widget_metrics_enabled=metrics_enabled,
+        flamingo_answer_counter_enabled=counter_enabled,
     )
     app = create_app(
         settings=settings,
@@ -66,6 +72,7 @@ async def build_app(
             answer_generator=generator,
             query_planner=planner,
             request_quota=request_quota,
+            answer_counter=answer_counter,
         ),
     )
     return app, generator
@@ -547,3 +554,152 @@ async def test_privacy_page_is_available_without_an_origin(tmp_path) -> None:
             response = await client.get("/privacy")
     assert response.status_code == 200
     assert "Aggregate feedback privacy" in response.text
+
+
+def completion_payload(response: httpx2.Response) -> dict[str, object]:
+    blocks = response.text.split("\n\n")
+    done = next(block for block in blocks if block.startswith("event: done\n"))
+    return json.loads(done.split("data: ", 1)[1])
+
+
+@pytest.mark.asyncio
+async def test_public_counter_reads_never_count_questions_and_cannot_be_written() -> None:
+    store = InMemoryAnswerCounter(370)
+    app, generator = await build_app(answer_counter=store, client_quota=1)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            responses = [await client.get("/v1/answer-count") for _ in range(12)]
+            forbidden_write = await client.post("/v1/answer-count", json={"answered": 9999})
+            forbidden_origin = await client.get(
+                "/v1/answer-count", headers={"Origin": "https://evil.example"}
+            )
+            reply = await client.post("/v1/chat", json={"question": "What is Flamingo Revolution?"})
+    assert all(row.json() == {"answered": 370, "approximate": True} for row in responses)
+    assert responses[0].headers["cache-control"] == "public, max-age=15"
+    assert forbidden_write.status_code == 405
+    assert forbidden_origin.status_code == 403
+    assert completion_payload(reply)["answer_count"] == {"answered": 371, "approximate": True}
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_each_completed_reply_counts_once_not_replayed_history() -> None:
+    store = InMemoryAnswerCounter(370)
+    app, _ = await build_app(answer_counter=store)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            first = await client.post("/v1/chat", json={"question": "What is Flamingo Revolution?"})
+            second = await client.post(
+                "/v1/chat",
+                json={
+                    "question": "What is Flamingo Revolution?",
+                    "history": [
+                        {"role": "user", "text": "A previous question"},
+                        {"role": "assistant", "text": "A previous answer"},
+                    ],
+                },
+            )
+            final = await client.get("/v1/answer-count")
+    assert completion_payload(first)["answer_count"]["answered"] == 371
+    assert completion_payload(second)["answer_count"]["answered"] == 372
+    assert final.json()["answered"] == 372
+
+
+@pytest.mark.asyncio
+async def test_failed_empty_or_refused_requests_do_not_increase_count() -> None:
+    store = InMemoryAnswerCounter(370)
+    app, generator = await build_app(answer_counter=store, rate_limit=2)
+    generator.answer = ""
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            empty = await client.post("/v1/chat", json={"question": "What is Flamingo Revolution?"})
+            invalid = await client.post("/v1/chat", json={"question": "x"})
+            assert invalid.status_code == 422
+            app.state.chat_service.stream = failing_stream
+            failed = await client.post(
+                "/v1/chat", json={"question": "What is Flamingo Revolution?"}
+            )
+            refused = await client.post(
+                "/v1/chat", json={"question": "What is Flamingo Revolution?"}
+            )
+    assert "event: error" in empty.text and "event: done" not in empty.text
+    assert "event: error" in failed.text and "event: done" not in failed.text
+    assert refused.status_code == 429
+    assert (await store.read()).answered == 370
+
+
+async def failing_stream(*args, **kwargs):
+    raise ProviderError("test failure")
+
+
+@pytest.mark.asyncio
+async def test_optional_counter_failure_never_changes_successful_answer_or_leaks_details(caplog):
+    class BrokenCounter(InMemoryAnswerCounter):
+        async def increment(self):
+            raise RuntimeError("PRIVATE-MARKER")
+
+        async def read(self):
+            raise ProviderError("PRIVATE-MARKER")
+
+    app, _ = await build_app(answer_counter=BrokenCounter())
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            missing = await client.get("/v1/answer-count")
+            reply = await client.post("/v1/chat", json={"question": "What is Flamingo Revolution?"})
+    assert missing.status_code == 503
+    assert missing.json()["answered"] is None
+    assert "event: done" in reply.text and "event: error" not in reply.text
+    assert "answer_count" not in completion_payload(reply)
+    assert "PRIVATE-MARKER" not in reply.text + missing.text + caplog.text
+
+
+@pytest.mark.asyncio
+async def test_disabled_counter_and_candidate_smoke_never_increment_shared_total() -> None:
+    for enabled, base in ((False, "http://test"), (True, "http://candidate---bot.example")):
+        store = InMemoryAnswerCounter(370)
+        app, _ = await build_app(answer_counter=store, counter_enabled=enabled)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url=base
+            ) as client:
+                reply = await client.post(
+                    "/v1/chat", json={"question": "What is Flamingo Revolution?"}
+                )
+        assert "event: done" in reply.text
+        assert "answer_count" not in completion_payload(reply)
+        assert (await store.read()).answered == 370
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_does_not_count() -> None:
+    store = InMemoryAnswerCounter(370)
+    app, _ = await build_app(answer_counter=store)
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    async with app.router.lifespan_context(app):
+        app.state.chat_service.stream = cancelled
+        # Exercise the generator directly: ASGI transports do not model a real
+        # disconnected socket consistently, while cancellation must propagate.
+        from starlette.requests import Request
+
+        from flamingo_bot.api import ChatRequest
+
+        route = next(route for route in app.routes if getattr(route, "path", "") == "/v1/chat")
+        request = Request({"type": "http", "app": app, "headers": [], "server": ("test", 80)})
+        response = await route.endpoint(
+            ChatRequest(question="What is Flamingo Revolution?"), request
+        )
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in response.body_iterator:
+                pass
+    assert (await store.read()).answered == 370

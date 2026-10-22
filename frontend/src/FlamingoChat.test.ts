@@ -27,14 +27,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function openWidget(answerFails = false, metricsEnabled = true, incompleteAnswer = false) {
+async function openWidget(answerFails = false, metricsEnabled = true, incompleteAnswer = false,
+  count: number | null = 370, countUnavailable = false) {
   const fetcher = vi.fn(async (url: string, options?: RequestInit) => {
     if (url.endsWith("/v1/widget-config")) return new Response(JSON.stringify({ metrics_enabled: metricsEnabled }));
     if (url.endsWith("/v1/widget-metrics")) return new Response(null, { status: 204 });
+    if (url.endsWith("/v1/answer-count")) return new Response(JSON.stringify({ answered: count, approximate: true }),
+      { status: countUnavailable ? 503 : 200 });
     if (url.endsWith("/v1/chat")) {
       if (answerFails) return new Response('{"detail":"server_busy"}', { status: 429 });
       return new Response('event: delta\ndata: {"text":"A completed answer."}\n\n' +
-        (incompleteAnswer ? "" : 'event: done\ndata: {}\n\n'));
+        (incompleteAnswer ? "" : 'event: done\ndata: {"answer_count":{"answered":371,"approximate":true}}\n\n'));
     }
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -49,7 +52,7 @@ async function openWidget(answerFails = false, metricsEnabled = true, incomplete
   const reports = () => fetcher.mock.calls
     .filter(([url]) => url.endsWith("/v1/widget-metrics"))
     .map(([, options]) => JSON.parse(String(options?.body)));
-  return { root, reports };
+  return { root, reports, fetcher };
 }
 
 describe("widget suggestion and rating UI", () => {
@@ -101,5 +104,49 @@ describe("widget suggestion and rating UI", () => {
     (root.querySelector(".suggestions button") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(root.querySelector(".messages")?.textContent).toContain("A completed answer."));
     expect(root.querySelectorAll(".answer-rating button")).toHaveLength(0);
+  });
+});
+
+describe("lifetime answer count UI", () => {
+  it("loads on open and uses the authoritative completed-answer total without polling", async () => {
+    const { root, fetcher } = await openWidget();
+    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("370"));
+    expect(root.querySelector(".answer-count")?.textContent).toContain("questions answered");
+    expect(root.querySelector(".answer-count")?.textContent).toContain("≈");
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("371"));
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/v1/answer-count"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/v1/chat"))).toHaveLength(1);
+  });
+
+  it("localizes the compact label and keeps it independent of optional feedback", async () => {
+    document.documentElement.lang = "sq";
+    const { root, reports } = await openWidget(false, false);
+    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("pyetje me përgjigje"));
+    expect(root.querySelector(".answer-count")?.getAttribute("title")).toContain("Jo vizitorë unikë");
+    expect(reports()).toEqual([]);
+  });
+
+  it("does not locally increment on a failed or incomplete answer", async () => {
+    for (const [fails, incomplete] of [[true, false], [false, true]]) {
+      const { root } = await openWidget(fails, true, incomplete);
+      await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("370"));
+      (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+      // The textarea is disabled only while the stream is active (the send
+      // button also stays disabled for empty input, so it is not a completion signal).
+      await vi.waitFor(() => expect(root.querySelector(".suggestions")).toBeNull());
+      await vi.waitFor(() => expect(root.querySelector("textarea")?.hasAttribute("disabled")).toBe(false));
+      expect(root.querySelector(".answer-count")?.textContent).not.toContain("371");
+      document.body.replaceChildren();
+    }
+  });
+
+  it("hides a missing/unavailable total while keeping chat usable", async () => {
+    const { root } = await openWidget(false, false, false, null, true);
+    expect(root.querySelector(".answer-count")).toBeNull();
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.querySelector(".messages")?.textContent).toContain("A completed answer."));
+    await vi.waitFor(() => expect(root.querySelector(".answer-count")?.textContent).toContain("371"));
+    expect(root.querySelector(".error")).toBeNull();
   });
 });

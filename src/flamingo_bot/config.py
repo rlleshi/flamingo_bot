@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     #: exclusions are configured. Local test bundles use aggregate memory storage.
     flamingo_widget_metrics_enabled: bool = False
     flamingo_widget_metrics_daily_limit: int = Field(default=10_000, ge=1, le=100_000)
+    #: Lifetime completed-answer aggregate. Only production uses shared storage;
+    #: development/tests always use memory. Missing production seeds stay hidden.
+    flamingo_answer_counter_enabled: bool = True
 
     model_config_path: Path = PROJECT_ROOT / "openai.yaml"
     source_catalog_path: Path = PROJECT_ROOT / "config" / "sources.yaml"
