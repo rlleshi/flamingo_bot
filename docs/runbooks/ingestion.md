@@ -87,9 +87,11 @@ The `participation_days` parser emits methodology, an index, timeline events,
 and individual bilingual day records from `data/participation.ts`. Each day
 retains its number, event date, stable ID and source/livestream URLs. Chunks label
 participation values as estimates, not headcounts. The legacy `participation_ts`
-parser remains available; new formats are `participation_days/1` and
-`protest_research/2`, preserving embedding reuse for unaffected sources. Research
-filing dates stay separate from explicitly recorded incident dates.
+parser remains available. The research reader supports both `protest_research/2`
+and `protest_research/3`: newer indexes can use `supports` and event-scope fields,
+while local paths and unopened leads remain excluded. Filing dates stay separate
+from explicitly recorded incident dates. Unaffected text keeps its reusable
+embedding.
 
 - Explicit duplicate exclusion: `diaspora_zbarkon/data/scandals.ts`.
 - Explicit code-only exclusions: `src/data/referendum.ts`, `src/data/navIcons.ts`,
@@ -176,9 +178,11 @@ Only protest-related reporting published from **31 May 2026** (Tirana local
 midnight) through the scan time is eligible. Topic scores are relevance rules,
 not popularity, independent verification or proof of a claim.
 Selection requires a movement/protected-area link or civic/student-protest and
-rights-reporting context. Unrelated local disputes and incidental mentions of
-protests in general news do not qualify. This is a bounded, rule-based selection,
-not a claim that every relevant article has been discovered.
+rights-reporting context. It includes reporting on investigations related to the
+student protests and the development or legal issues in the specifically named
+protected areas. Unrelated local disputes and incidental mentions of protests in
+general news do not qualify. This is a bounded, rule-based selection, not a claim
+that every relevant article has been discovered.
 
 Set `FLAMINGO_CITIZENS_DIR=.local/citizens` in the private `.env`, then run:
 

@@ -213,6 +213,60 @@ def test_movement_followups_rights_and_explicit_solidarity_remain_in_scope(
     assert movement_topics(title, "", body)[0] > 0
 
 
+def test_protest_police_investigation_is_in_scope() -> None:
+    title = "Plumbi në syrin e Vishkullit, vjen procedimi penal ndaj policisë gjatë protestave"
+    excerpt = (
+        "Prokuroria e Tiranës regjistroi procedimin ndaj Policisë së Shtetit "
+        "që nga nisja e protestave 149 ditë më parë."
+    )
+    body = excerpt + " Ai u plagos në Tiranë; hetimi për përdorimin e forcës vazhdon."
+    assert movement_topics(title, excerpt, body)[0] > 0
+
+
+@pytest.mark.parametrize(
+    "title,excerpt,body",
+    [
+        (
+            "Nga ligji te gardhi me gjemba: si u dorëzuan zonat e mbrojtura",
+            "Çfarë po ndodh në Zvërnec dhe në zonat e mbrojtura të Shqipërisë.",
+            "Artikulli analizon ligjin dhe ndërtimet në zonën e mbrojtur të Zvërnecit.",
+        ),
+        (
+            "Shfuqizimi i ligjit e lë derën hapur për investitorët strategjikë",
+            "Projektligji zëvendësues mban në fuqi trajtimin për investitorët strategjikë.",
+            "Artikulli shqyrton dispozitat e ligjit dhe projektin e resortit në Sazan.",
+        ),
+    ],
+)
+def test_reports_on_protest_causes_remain_in_scope(title: str, excerpt: str, body: str) -> None:
+    score, topics = movement_topics(title, excerpt, body)
+    assert score > 0
+    assert "protest-causes" in topics
+
+
+@pytest.mark.parametrize(
+    "title,excerpt,body",
+    [
+        ("Turistët vizitojnë Sazanin", "Pushime në det", "Udhëtim në ishullin e Sazanit."),
+        (
+            "Policia heton përleshjet në Francë",
+            "Hetim për protestën në Paris.",
+            "Policia franceze heton protestat në Paris.",
+        ),
+        (
+            "Polici dhe Gardë pranë resorteve në Palasë",
+            "Projekt për një qendër të re shërbimesh publike.",
+            "Ndërtimi në Palasë është pjesë e një tjetër projekti.\n\n"
+            "Lexo edhe: ankandet e 2025 nga Sazani te një zonë tjetër.",
+        ),
+    ],
+)
+def test_unrelated_travel_and_foreign_investigations_remain_excluded(
+    title: str, excerpt: str, body: str
+) -> None:
+    assert movement_topics(title, excerpt, body) == (0, [])
+
+
 def test_fragment_extraction_removes_executable_and_navigation_text() -> None:
     assert (
         plain_text(

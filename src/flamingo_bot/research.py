@@ -35,6 +35,8 @@ def _access_status(record: dict[str, Any]) -> str | None:
     # Reading an indexed full body is distinct from seeing only a search snippet.
     if re.search(r"(?:body|text|statement).{0,30}(?:opened|read)", access):
         return "indexed_body_read" if "indexed" in access else "body_read"
+    if _text(record.get("access_status")).lower() == "opened_body":
+        return "body_read"
     if any(
         word in access for word in ("indexed only", "snippet", "excerpt", "failed", "search result")
     ):
@@ -69,6 +71,10 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
         if not isinstance(record, dict):
             raise ValueError("A research source must be an object")
         url = _text(record.get("url"))
+        # Newer research indexes also list local model artifacts. They are not
+        # public reporting and must never enter a source-grounded answer.
+        if url.startswith(("outputs/", "/home/", "/Users/")):
+            continue
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username:
             raise ValueError("A research source needs a public HTTP(S) URL")
@@ -81,9 +87,11 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
             continue
         outlet = _text(record.get("outlet"))
         title = _text(record.get("title") or record.get("title_excerpt")) or outlet
-        summary = _text(record.get("summary") or record.get("use"))
+        summary = _text(record.get("summary") or record.get("use") or record.get("supports"))
         if not outlet or not title or not summary:
-            raise ValueError("A research source needs outlet, title, and summary/use fields")
+            raise ValueError(
+                "A research source needs outlet, title, and summary/use/supports fields"
+            )
         publication = next(
             (
                 _text(record[key])
@@ -92,28 +100,53 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
                     "published_or_stream_date",
                     "published_at",
                     "published_date",
+                    "publication_date_time",
+                    "publication_datetime",
+                    "publication_date",
                 )
                 if record.get(key)
             ),
             "Not recorded",
         )
-        lineage = _text(record.get("reporting_lineage") or record.get("independence"))
-        caveats = _text(record.get("uncertainties") or record.get("source_text_caveat"))
+        lineage = _text(
+            record.get("reporting_lineage") or record.get("independence")
+            or record.get("attribution_lineage") or record.get("lineage")
+        )
+        caveats = _text(
+            record.get("uncertainties") or record.get("source_text_caveat")
+            or record.get("attribution_lineage_limitations") or record.get("limitations")
+        )
         event_date = _text(
             record.get("event_date")
             or record.get("event_date_referenced")
             or record.get("event_dates")
         )
+        event_scope = _text(record.get("event_date_scope"))
+        if event_date:
+            event_note = f"Event date(s) explicitly recorded for this source: {event_date}."
+        elif event_scope:
+            event_note = (
+                f"Event scope as recorded in research: {event_scope}. Do not infer an "
+                "incident date from the publication date or research file's filing date."
+            )
+        else:
+            event_note = (
+                "Incident date: not specified in this source record. Do not infer it "
+                "from the publication date or the research file's filing date."
+            )
+        extended_format = any(
+            record.get(key)
+            for key in (
+                "supports", "publication_date_time", "publication_datetime", "publication_date",
+                "event_date_scope", "attribution_lineage", "lineage",
+                "attribution_lineage_limitations", "limitations",
+            )
+        )
         parts = [
             "Flamingo Revolution / Revolucioni Flamingo: author's source-linked protest research.",
             f"Publisher: {outlet}. Article: {title}.",
             f"Publication as recorded in research: {publication}.",
-            (
-                f"Event date(s) explicitly recorded for this source: {event_date}."
-                if event_date
-                else "Incident date: not specified in this source record. Do not infer it "
-                "from the publication date or the research file's filing date."
-            ),
+            event_note,
             f"Author's summary of the report: {summary}",
         ]
         if lineage:
@@ -133,7 +166,9 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
                     "research_date": calendar_date,
                     "reported_event_date": event_date,
                     "source_kind": "protest-research",
-                    "parser_format": "protest_research/2",
+                    "parser_format": (
+                        "protest_research/3" if extended_format else "protest_research/2"
+                    ),
                     "source_urls": [url],
                     "publisher": outlet,
                     "evidence_access": access,

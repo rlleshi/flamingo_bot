@@ -102,6 +102,74 @@ def test_research_has_public_citations_event_dates_and_no_operator_data(tmp_path
     assert "Unverified headline" not in document.text
 
 
+def test_new_research_format_preserves_evidence_and_excludes_local_inputs(tmp_path: Path) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["sources"].extend(
+        [
+            {
+                "outlet": "Example report",
+                "title": "A later public report",
+                "url": "https://example.org/new-format",
+                "publication_date_time": "2026-10-14 12:30",
+                "event_date_scope": "The earlier protest on 2026-10-12; timing uncertain",
+                "access_status": "opened_body",
+                "supports": ["An attributed allegation.", "The official response."],
+                "attribution_lineage_limitations": ["The inquiry is ongoing."],
+            },
+            {
+                "outlet": "Local model output",
+                "url": "outputs/protesta_136/scene_report.md",
+                "access_status": "opened_body",
+                "supports": ["PRIVATE LOCAL ANALYSIS"],
+            },
+            {
+                "outlet": "Local site code",
+                "url": "/home/example/project/data/participation.ts",
+                "access_status": "opened_body",
+                "supports": ["PRIVATE LOCAL SITE DATA"],
+            },
+            {
+                "outlet": "Search lead",
+                "url": "https://example.org/unopened",
+                "access_status": "open_failed",
+                "supports": ["UNVERIFIED SEARCH LEAD"],
+            },
+        ]
+    )
+    index.write_text(json.dumps(data))
+
+    evidence = read_research_evidence(index)
+    assert len(evidence) == 2
+    original, added = evidence
+    assert original.metadata["parser_format"] == "protest_research/2"
+    assert added.metadata["parser_format"] == "protest_research/3"
+    assert added.metadata["evidence_access"] == "body_read"
+    assert added.metadata["reported_event_date"] == ""
+    assert "2026-10-14 12:30" in added.text
+    assert "2026-10-12; timing uncertain" in added.text
+    assert "The official response." in added.text
+    assert "The inquiry is ongoing." in added.text
+    assert "PRIVATE LOCAL ANALYSIS" not in str(evidence)
+    assert "UNVERIFIED SEARCH LEAD" not in str(evidence)
+
+
+def test_new_research_format_rejects_unknown_invalid_urls(tmp_path: Path) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["sources"].append(
+        {"outlet": "Unknown", "url": "file:///private/notes", "supports": "Not public"}
+    )
+    index.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError, match="public HTTP"):
+        read_research_evidence(index)
+
+
 def test_research_versions_only_the_explicit_source_indexes(tmp_path: Path) -> None:
     index = write_index(tmp_path)
     definition = research_source()

@@ -35,7 +35,7 @@ ROBOTS_URL = BASE_URL + "/robots.txt"
 POSTS_URL = BASE_URL + "/wp-json/wp/v2/posts"
 USER_AGENT = "FlamingoBotProtestArticles/1.0 (+https://www.flamingorevolution.eu/)"
 FORMAT_VERSION: Literal["citizens-article/1"] = "citizens-article/1"
-FILTER_VERSION = "citizens-protest-topics/2"
+FILTER_VERSION = "citizens-protest-topics/3"
 MAX_RESPONSE_BYTES = 8_000_000
 _QUERY_KEYS = {
     "per_page",
@@ -127,8 +127,6 @@ def movement_topics(title: str, excerpt: str, body: str) -> tuple[int, list[str]
     score, topics = protest_topics(title, excerpt)
     if not score:
         score, topics = protest_topics(title, body)
-    if not score:
-        return 0, []
 
     def fold(value: str) -> str:
         return " ".join(
@@ -140,6 +138,28 @@ def movement_topics(title: str, excerpt: str, body: str) -> tuple[int, list[str]
         )
 
     text, lead = fold(title + " " + body), fold(title + " " + excerpt + " " + body[:800])
+    # An article can cover the origin of the movement without literally using
+    # the word "protest": require both a named affected location and the
+    # development, protected-area or legal issue to be its subject.
+    cause_site_pattern = r"zvernec|pishe.?poro|\bnart\w*|sazan"
+    cause_detail_pattern = (
+        r"ligj\w*|projekt\w*|zon\w*.{0,25}mbrojt|resort\w*|ndert\w*|"
+        r"investitor\w*|habitat\w*|kallezim\w*|leje\w*"
+    )
+    # A name in a "read also" link is not enough to establish that the
+    # article itself covers a protected-area issue.
+    cause_site = any(
+        re.search(cause_site_pattern, paragraph)
+        and re.search(cause_detail_pattern, paragraph)
+        for paragraph in (fold(title + " " + excerpt), *(fold(p) for p in body.split("\n\n")))
+    )
+    cause_subject = re.search(
+        r"ligj\w*|projektligj\w*|zon\w*.{0,25}mbrojt|resort\w*|ndert\w*|"
+        r"investitor\w*.{0,25}strategjik|habitat\w*|kallezim\w*|leje\w*",
+        lead,
+    )
+    if not score:
+        return (50, ["protest-causes"]) if cause_site and cause_subject else (0, [])
     movement = bool(
         re.search(
             r"flaming\w*|diaspora zbarkon|zvernec|\bnart\w*|sazan|rrjoll|kakome|mertur|"
@@ -171,9 +191,21 @@ def movement_topics(title: str, excerpt: str, body: str) -> tuple[int, list[str]
         and re.search(r"protest\w*", lead)
         and re.search(r"helsink|res publica|sejran|liri\w*.{0,30}(?:medi|tubim)", text)
     )
+    # Keep proceedings about police actions against this protest even when the
+    # headline lacks the names of the movement or a human-rights organization.
+    police_proceeding = bool(
+        re.search(r"polic\w*|prokuror\w*", fold(title))
+        and re.search(r"plumb\w*|plagos\w*|procedim\w*|hetim\w*|dhun\w*|arrest\w*", fold(title))
+        and re.search(r"protest\w*", lead)
+        and (
+            re.search(r"protest\w*.{0,60}\b\d{1,3}\s+dit\w*", lead)
+            or re.search(r"student\w*.{0,100}protest|protest\w*.{0,100}student", text)
+        )
+    )
     if (
         movement
         or protest_rights
+        or police_proceeding
         or (re.search(r"protest|revolt|marshim", lead) and central_protest)
     ):
         return score, topics

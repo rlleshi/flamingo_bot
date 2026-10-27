@@ -18,6 +18,7 @@ BASE = "https://referendum21.org"
 TRANSIENT_LINES = {
     "Duke u sinkronizuar...",
     "Po ngarkohen turnet e nënshkrimit…",
+    "Nuk gjetëm një turn në këtë zonë. Provo një qytet tjetër ose na ndihmo të hapim një pikë.",
     "--",
     "-- nënshkrime deri te pragu kushtetues prej 50.000 qytetarësh.",
 }

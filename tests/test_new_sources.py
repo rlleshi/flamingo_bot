@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from flamingo_bot.chunking import SemanticChunker
 from flamingo_bot.config import Settings
 from flamingo_bot.parsers import parse_sources
 from flamingo_bot.sources import ResolvedSource, SourceDefinition, SourceRule, load_source_catalog
 from flamingo_bot.web_content import discover_news_urls, extract_main_text
+from scripts import snapshot_referendum21
 
 
 def _source(repository: Path, parser: str, pattern: str) -> ResolvedSource:
@@ -100,6 +103,28 @@ def test_news_discovery_and_article_extraction_ignore_navigation() -> None:
     assert "useful factual context" in body
     assert "Ignore this navigation" not in body
     assert "Ignore this script" not in body
+
+
+def test_referendum_snapshot_excludes_unloaded_signing_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = (
+        "<main><h1>Referendum 21/2024</h1>"
+        "<p>Citizens are collecting signatures for a referendum on protected areas. "
+        "Please check the live website for current signing locations.</p>"
+        "<p>Po ngarkohen turnet e nënshkrimit…</p>"
+        "<p>Nuk gjetëm një turn në këtë zonë. Provo një qytet tjetër ose na ndihmo të hapim "
+        "një pikë.</p></main>"
+    )
+    monkeypatch.setattr(snapshot_referendum21, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(snapshot_referendum21, "PATHS", ("/",))
+    monkeypatch.setattr(snapshot_referendum21, "fetch_public_html", lambda _: page)
+    snapshot_referendum21.main()
+
+    text = (tmp_path / "content/snapshots/referendum21/home.md").read_text()
+    assert "referendum on protected areas" in text
+    assert "Po ngarkohen" not in text
+    assert "Nuk gjetëm një turn" not in text
 
 
 def test_safety_guidance_is_ingested_with_its_own_public_citation(tmp_path: Path) -> None:
