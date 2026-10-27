@@ -8,6 +8,34 @@ afterEach(() => {
 });
 
 describe("aggregate widget feedback", () => {
+  it("calls browser fetch with its global receiver for all feedback", async () => {
+    // Native browser fetch rejects an arbitrary class instance as its receiver.
+    const browserFetch = vi.fn(function (
+      this: typeof globalThis,
+      url: RequestInfo | URL,
+      _options?: RequestInit,
+    ): Promise<Response> {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(String(url).endsWith("/v1/widget-config")
+        ? new Response('{"metrics_enabled":true}')
+        : new Response(null, { status: 204 }));
+    });
+    vi.stubGlobal("fetch", browserFetch);
+
+    const metrics = new WidgetMetrics("https://bot.example");
+    await metrics.record({ kind: "shown", suggestion_ids: ["movement", "diaspora", "pulsi", "dossier"] });
+    await metrics.record({ kind: "clicked", suggestion_ids: ["movement"] });
+    await metrics.record({ kind: "rated", rating: "helpful" });
+
+    expect(browserFetch).toHaveBeenCalledTimes(4);
+    expect(browserFetch.mock.calls.slice(1).map(([, options]) => JSON.parse(String(options?.body))))
+      .toEqual([
+        { kind: "shown", suggestion_ids: ["movement", "diaspora", "pulsi", "dossier"] },
+        { kind: "clicked", suggestion_ids: ["movement"] },
+        { kind: "rated", rating: "helpful" },
+      ]);
+  });
+
   it("sends only predefined counters without cookies or referrers", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response('{"metrics_enabled":true}'))

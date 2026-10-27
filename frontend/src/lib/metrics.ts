@@ -10,7 +10,8 @@ export class WidgetMetrics {
   private fetcher: typeof fetch;
   private ready: Promise<boolean> | null = null;
 
-  constructor(apiBase: string, fetcher: typeof fetch = fetch) {
+  // Native browser fetch must be called with the global object as its receiver.
+  constructor(apiBase: string, fetcher: typeof fetch = (...args) => globalThis.fetch(...args)) {
     this.apiBase = apiBase.replace(/\/+$/, "");
     this.fetcher = fetcher;
   }
