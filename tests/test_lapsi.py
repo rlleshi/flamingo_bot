@@ -342,6 +342,76 @@ def test_diaspora_flamingo_reporting_remains_in_scope() -> None:
     assert topics == ["flamingo-movement"]
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Rama", "Ramë", "Ramën", "Ramen", "Ramës", "Rames", "Manjën", "Manjës",
+        "Ballën", "Ballës", "Ballukun", "Ballukut", "Hitajn", "Hitajt", "Veliajn",
+        "Veliajt", "Nokën", "Nokës", "Bashën", "Bashës",
+    ],
+)
+def test_official_name_declensions_keep_protest_reporting_in_scope(name: str) -> None:
+    score, _ = protest_topics(
+        f"Protestuesit kundërshtojnë {name} për pajisjet nga Izraeli",
+        "Policia shqiptare përballet me kërkesa për transparencë.",
+    )
+    assert score > 0
+
+
+@pytest.mark.parametrize("name", ["Ramallah", "Ramadan", "Ramesh", "Ballard"])
+def test_official_name_prefixes_do_not_match_unrelated_foreign_protests(name: str) -> None:
+    assert protest_topics(
+        f"Protestë në Gaza, flet {name}",
+        "Demonstruesit protestojnë kundër një vendimi.",
+    ) == (0, [])
+
+
+@pytest.mark.parametrize("name", ["Ramën", "Hitajt", "Ballukut"])
+def test_official_names_still_require_protest_context(name: str) -> None:
+    assert protest_topics(
+        f"Takimi me {name} për marrëveshjen e re",
+        "Diskutohet bashkëpunimi tregtar me Izraelin.",
+    ) == (0, [])
+
+
+@pytest.mark.parametrize("name", ["Berisha", "Berishën", "Berishës", "Berishen", "Berishes"])
+def test_opposition_name_declensions_preserve_the_partisan_news_exclusion(name: str) -> None:
+    assert protest_topics(
+        f"Protesta e organizuar nga {name}",
+        "Partia Demokratike njofton tubimin në Tiranë.",
+    ) == (0, [])
+
+
+def test_protest_criticism_of_both_rama_and_berisha_remains_in_scope() -> None:
+    score, _ = protest_topics(
+        "Protesta para kryeministrisë, digjen manekinat e Ramës dhe Berishës",
+        "Demonstruesit kundërshtojnë politikanët dhe vijojnë protestën.",
+    )
+    assert score > 0
+
+
+def test_israeli_equipment_article_is_selected_from_its_publisher_metadata() -> None:
+    url = BASE_URL + "/si-e-ndihmuan-izraelitet-ramen-te-masakronte-protestuesit-i1097982"
+    reference = extract_reference(
+        page(
+            url,
+            title="Si e ndihmuan izraelitët Ramën të masakronte protestuesit",
+            excerpt=(
+                "Nga Ferdinand DervishiTë shtunën, më 7 nëntor 2026, "
+                "policia shqiptare i rrëfeu popullit një faqe tjetër"
+            ),
+            published="2026-11-13T10:59:56+01:00",
+            section="Kryesore",
+        ),
+        url,
+        captured_at=datetime(2026, 11, 15, tzinfo=UTC),
+    )
+    assert reference is not None
+    assert reference.url == url
+    assert reference.content_use == "reference"
+    assert "FULL ARTICLE BODY" not in reference.model_dump_json()
+
+
 @pytest.mark.parametrize("signal", ["search=no", "ai-input=no", "use=immediate"])
 def test_content_signals_are_checked_before_collecting_articles(signal: str) -> None:
     with pytest.raises(ValueError, match="disallow"):

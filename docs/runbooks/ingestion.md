@@ -40,7 +40,9 @@ of at most 20 passages. Explicit publisher, date, protest-day and aggregate
 anchors can recover relevant records. The independent reranker selects at most
 seven passages for the answer model; duplicates are not corroboration. Named
 places/dates retain their scope, and publication timestamps never become incident
-dates. The answer model still receives the original question.
+dates. Vague protest-supplies questions can explore police riot-control equipment
+as a possible meaning in the semantic route. The separate original-question route
+and the answer model preserve the visitor's wording and uncertainty.
 
 The staged generation and `ingestion_runs/{generation_id}` audit record persist
 source revisions and coverage, parser/chunker/normalization versions, embedding
@@ -87,11 +89,12 @@ The `participation_days` parser emits methodology, an index, timeline events,
 and individual bilingual day records from `data/participation.ts`. Each day
 retains its number, event date, stable ID and source/livestream URLs. Chunks label
 participation values as estimates, not headcounts. The legacy `participation_ts`
-parser remains available. The research reader supports both `protest_research/2`
-and `protest_research/3`: newer indexes can use `supports` and event-scope fields,
-while local paths and unopened leads remain excluded. Filing dates stay separate
-from explicitly recorded incident dates. Unaffected text keeps its reusable
-embedding.
+parser remains available. The research reader supports legacy indexes and newer
+formats through `protest_research/5`. It accepts `calendar_date` or `date`, rejects
+conflicting date aliases, and preserves explicit event-scope notes, publication
+timing notes, qualifications and reporting groups. Local paths and unopened leads
+remain excluded. Filing dates stay separate from explicitly recorded incident
+dates. Unaffected text keeps its reusable embedding.
 
 - Explicit duplicate exclusion: `diaspora_zbarkon/data/scandals.ts`.
 - Explicit code-only exclusions: `src/data/referendum.ts`, `src/data/navIcons.ts`,
@@ -113,6 +116,10 @@ with a 48-hour overlap. Monthly sitemap metadata is also checked across the
 historical range to detect newly indexed older articles and edits. Selection
 uses URL markers, then publisher headlines/intros/sections; topic scores are not
 popularity or factual-verification scores. Discovery is bounded, not exhaustive.
+The shared Lapsi/Citizens topic filter recognises explicit Albanian name forms
+such as Rama, Ramën/Ramen and Ramës/Rames, alongside selected other officials'
+surnames. Protest context is still required. Topic-filter version changes trigger
+a historical reconciliation so earlier rejected references can be checked again.
 
 Set `FLAMINGO_LAPSI_DIR=.local/lapsi` in the private `.env`, then preview and save:
 
@@ -177,6 +184,9 @@ never requests drafts, private posts, passwords, admin pages or blocked feeds.
 Only protest-related reporting published from **31 May 2026** (Tirana local
 midnight) through the scan time is eligible. Topic scores are relevance rules,
 not popularity, independent verification or proof of a claim.
+The `--licensed-full-text` option applies that separately confirmed permission
+when Citizens publishes a generic `use=reference` signal. URL restrictions,
+request delays, explicit AI-input prohibitions and protest-topic checks still apply.
 Selection requires a movement/protected-area link or civic/student-protest and
 rights-reporting context. It includes reporting on investigations related to the
 student protests and the development or legal issues in the specifically named
@@ -187,8 +197,8 @@ that every relevant article has been discovered.
 Set `FLAMINGO_CITIZENS_DIR=.local/citizens` in the private `.env`, then run:
 
 ```bash
-uv run python scripts/snapshot_citizens.py --dry-run --pretty
-uv run python scripts/snapshot_citizens.py --write --pretty
+uv run python scripts/snapshot_citizens.py --dry-run --licensed-full-text --pretty
+uv run python scripts/snapshot_citizens.py --write --licensed-full-text --pretty
 uv run python -m flamingo_bot.ingest --dry-run --pretty
 GCP_IMPERSONATE_SERVICE_ACCOUNT="$GCP_INGESTION_SERVICE_ACCOUNT" \
   uv run python -m flamingo_bot.ingest --publish --pretty

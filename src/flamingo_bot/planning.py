@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from flamingo_bot.conversation import render_transcript
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 
-RETRIEVAL_VERSION = "2.1.0"
+RETRIEVAL_VERSION = "2.1.1"
 SOURCE_IDS = ("flamingo-dossier", "flamingo-revolution", "diaspora-zbarkon", "lapsi", "citizens")
 MAX_CANDIDATES = 20
 MAX_ANCHORS = 16
@@ -113,6 +113,11 @@ standalone (e.g. 'If referring to the recent escalation ...'), rather than inven
 
 Queries should be concise semantic searches with the subject and requested aspect, in Albanian
 or English as useful. Do not copy the whole transcript or include output-format instructions.
+Expand vague terminology into useful domain concepts in the FIRST query, since a separate route
+preserves the visitor's original wording. For questions about foreign states sending 'materials'
+or 'supplies' around protests, consider both protest supplies and police riot-control equipment
+deliveries. An English semantic query can make this equipment meaning explicit across languages.
+Keep this as a possible interpretation, never as evidence that a delivery or its purpose is proven.
 Do not introduce a named person, event date or place absent from the visitor's scope; the
 movement's general Albania context and the supplied as-of search hint are allowed. Use at most
 the requested query count. A second query, if useful, should explore an alternate phrasing or

@@ -35,7 +35,7 @@ ROBOTS_URL = BASE_URL + "/robots.txt"
 POSTS_URL = BASE_URL + "/wp-json/wp/v2/posts"
 USER_AGENT = "FlamingoBotProtestArticles/1.0 (+https://www.flamingorevolution.eu/)"
 FORMAT_VERSION: Literal["citizens-article/1"] = "citizens-article/1"
-FILTER_VERSION = "citizens-protest-topics/3"
+FILTER_VERSION = "citizens-protest-topics/4"
 MAX_RESPONSE_BYTES = 8_000_000
 _QUERY_KEYS = {
     "per_page",
@@ -418,6 +418,7 @@ def run_snapshot(
     max_articles: int = 5000,
     overlap_hours: int = 48,
     delay: float = 10,
+    licensed_full_text: bool = False,
     fetch: Callable[[str], Response] | None = None,
     now: datetime | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
@@ -435,6 +436,7 @@ def run_snapshot(
             full_rescan=full_rescan,
             max_articles=max_articles,
             overlap_hours=overlap_hours,
+            licensed_full_text=licensed_full_text,
             reader=reader,
             fetch=fetch or reader,
             now=now,
@@ -449,6 +451,7 @@ def _scan(
     full_rescan: bool,
     max_articles: int,
     overlap_hours: int,
+    licensed_full_text: bool,
     reader: PublicReader,
     fetch: Callable[[str], Response],
     now: datetime,
@@ -481,9 +484,10 @@ def _scan(
         ).astimezone(UTC)
     )
     policy = RobotsPolicy(fetch(ROBOTS_URL).text, robots_url=ROBOTS_URL, user_agent=USER_AGENT)
-    if policy.signals.get("use") == "reference":
+    if policy.signals.get("use") == "reference" and not licensed_full_text:
         raise ValueError(
-            "Citizens now requests reference-only use; review before full-text indexing"
+            "Citizens now requests reference-only use; pass --licensed-full-text "
+            "only with separately confirmed full-text permission"
         )
     reader.policy = policy
     parameters: dict[str, str | int] = {

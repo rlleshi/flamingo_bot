@@ -100,6 +100,7 @@ def test_research_has_public_citations_event_dates_and_no_operator_data(tmp_path
     assert "/private/operator" not in document.model_dump_json()
     assert "research-agent instructions" not in document.text
     assert "Unverified headline" not in document.text
+    assert "Source limitations:" not in document.text
 
 
 def test_new_research_format_preserves_evidence_and_excludes_local_inputs(tmp_path: Path) -> None:
@@ -168,6 +169,130 @@ def test_new_research_format_rejects_unknown_invalid_urls(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="public HTTP"):
         read_research_evidence(index)
+
+
+@pytest.mark.parametrize(
+    "summary_field", ["source_use_summary", "findings", "source_use", "event_scope"]
+)
+def test_recent_research_fields_preserve_dates_and_limits(
+    tmp_path: Path, summary_field: str
+) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["sources"] = [{
+        "outlet": "Example news",
+        "title": "Later follow-up",
+        "url": "https://example.org/follow-up",
+        summary_field: "The reporter describes a protest and an attributed police response.",
+        "published_at_local": "2026-11-05 10:00",
+        "event_date_or_scope": "The previous evening's protest",
+        "access_method": "article_body_web_reader",
+        "reporting_origin": "One shared police statement",
+        "caution": "Publication is not the incident date; no final ruling.",
+        "private_notes": "PRIVATE OPERATOR NOTES",
+    }]
+    index.write_text(json.dumps(data))
+    evidence = read_research_evidence(index)[0]
+    assert evidence.metadata["parser_format"] == "protest_research/4"
+    assert evidence.metadata["evidence_access"] == "body_read"
+    assert evidence.metadata["reported_event_date"] == ""
+    assert "2026-11-05 10:00" in evidence.text
+    assert "previous evening" in evidence.text
+    assert "One shared police statement" in evidence.text
+    assert "no final ruling" in evidence.text
+    assert "PRIVATE OPERATOR NOTES" not in str(evidence)
+
+
+def test_latest_research_date_alias_preserves_qualifications_and_reporting_group(
+    tmp_path: Path,
+) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["date"] = data.pop("calendar_date")
+    data["sources"] = [{
+        "outlet": "Example news / Reporter",
+        "title": "Retrospective equipment report",
+        "url": "https://example.org/equipment",
+        "published_date": "2026-11-13",
+        "published_time_note": "Listing displayed 10:59; article displayed the date only",
+        "event_date_note": "Retrospective reporting about October and early November",
+        "access_status": "body_read_public_html_http_200_after_web_open_failure",
+        "use": "The author alleges equipment deliveries and includes a police denial.",
+        "caution": "The investigation is ongoing.",
+        "qualifications": ["Flight records were not authenticated.", "Preserve the police denial."],
+        "evidence_group": "single_reporter_retrospective",
+        "local_run_dir": "/private/operator/model-output",
+    }]
+    index.write_text(json.dumps(data))
+
+    evidence = read_research_evidence(index)[0]
+    assert evidence.metadata["research_date"] == "2026-10-13"
+    assert evidence.metadata["reported_event_date"] == ""
+    assert evidence.metadata["parser_format"] == "protest_research/5"
+    assert evidence.metadata["evidence_access"] == "body_read"
+    assert "Retrospective reporting about October and early November" in evidence.text
+    assert "Listing displayed 10:59" in evidence.text
+    assert "Flight records were not authenticated." in evidence.text
+    assert "Preserve the police denial." in evidence.text
+    assert "The investigation is ongoing." in evidence.text
+    assert "single_reporter_retrospective" in evidence.text
+    assert "/private/operator" not in str(evidence)
+
+
+@pytest.mark.parametrize("value", [None, 20261113, "2026-02-31"])
+def test_research_date_alias_is_validated(tmp_path: Path, value: object) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data.pop("calendar_date")
+    data["date"] = value
+    index.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        read_research_evidence(index)
+
+
+def test_research_rejects_conflicting_date_aliases(tmp_path: Path) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["date"] = "2026-10-14"
+    index.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="calendar_date and date disagree"):
+        read_research_evidence(index)
+
+
+@pytest.mark.parametrize(
+    "access", ["preview_only", "discovery_only_HTTP_403", "indexed_text_body_unavailable"]
+)
+def test_recent_research_excludes_unread_source_leads(tmp_path: Path, access: str) -> None:
+    from flamingo_bot.research import read_research_evidence
+
+    index = write_index(tmp_path)
+    data = json.loads(index.read_text())
+    data["sources"].append({
+        "outlet": "Unread lead",
+        "url": "https://example.org/unread",
+        "source_use": "UNREAD SOURCE CLAIM",
+        "access_status": access,
+    })
+    data["sources"].append({
+        "outlet": "Contradictory access",
+        "url": "https://example.org/partial",
+        "source_use": "PARTIAL SOURCE CLAIM",
+        "access_status": "body_read",
+        "body_read": False,
+    })
+    index.write_text(json.dumps(data))
+    evidence = read_research_evidence(index)
+    assert len(evidence) == 1
+    assert "UNREAD SOURCE CLAIM" not in str(evidence)
+    assert "PARTIAL SOURCE CLAIM" not in str(evidence)
 
 
 def test_research_versions_only_the_explicit_source_indexes(tmp_path: Path) -> None:

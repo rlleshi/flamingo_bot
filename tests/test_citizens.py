@@ -399,6 +399,22 @@ def test_crawl_policy_changes_block_collection(tmp_path: Path, rule: str) -> Non
     assert not (tmp_path / "checkpoint.json").exists()
 
 
+def test_confirmed_licence_overrides_only_reference_use_signal(tmp_path: Path) -> None:
+    site = Site()
+    site.policy = POLICY + "Content-Signal: use=reference\n"
+    report = run_snapshot(tmp_path, dry_run=False, fetch=site, now=NOW, licensed_full_text=True)
+    assert report["selected"] == 1
+    assert read_article_index(tmp_path / "index.json").articles[0].body
+
+    site.policy += "Disallow: /wp-json/\n"
+    with pytest.raises(ValueError, match="disallows"):
+        run_snapshot(tmp_path, dry_run=False, fetch=site, now=NOW, licensed_full_text=True)
+
+    site.policy = POLICY + "Content-Signal: ai-input=no\n"
+    with pytest.raises(ValueError, match="disallow"):
+        run_snapshot(tmp_path, dry_run=False, fetch=site, now=NOW, licensed_full_text=True)
+
+
 def test_reader_throttles_initial_requests_and_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = PublicReader()
     clock = [100.0]

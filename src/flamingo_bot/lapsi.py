@@ -32,7 +32,7 @@ ROBOTS_URL = BASE_URL + "/robots.txt"
 SITEMAP_URL = BASE_URL + "/sitemap.xml"
 USER_AGENT = "FlamingoBotProtestReferences/1.0 (+https://www.flamingorevolution.eu/)"
 PROTEST_START = datetime(2026, 5, 31, tzinfo=ZoneInfo("Europe/Tirane"))
-FILTER_VERSION = "protest-topics/1"
+FILTER_VERSION = "protest-topics/2"
 MAX_RESPONSE_BYTES = 5_000_000
 MAX_EXCERPT_CHARS = 280
 _ARTICLE_PATH = re.compile(r"/(?:[^/?#\s]+|\d{4}/\d{2}/\d{2}/[^/?#\s]+)/*$")
@@ -42,6 +42,14 @@ _CANDIDATE = re.compile(
     r"plumba-gome|gaz-lotsjelles|dhun.{0,12}polic|polic.{0,12}dhun",
     re.I,
 )
+# Folded Albanian definite/oblique forms, bounded to avoid matching other names.
+_OFFICIAL_NAME = re.compile(
+    r"\b(?:ram(?:a|e|en|es)|manj(?:a|e|en|es)|ball(?:a|e|en|es)|"
+    r"balluku(?:n|t)?|hitaj(?:n|t|it)?|veliaj(?:n|t|it)?|"
+    r"berish(?:a|e|en|es)|nok(?:a|e|en|es)|bash(?:a|e|en|es))\b"
+)
+_BERISHA_NAME = re.compile(r"\bberish(?:a|e|en|es)\b")
+_RAMA_NAME = re.compile(r"\bram(?:a|e|en|es)\b")
 
 
 def normalize_url(url: str, *, article: bool = False) -> str:
@@ -105,13 +113,14 @@ def protest_topics(title: str, excerpt: str, section: str = "") -> tuple[int, li
     if re.search(r"\bflaming\w*\b|diaspora zbarkon", text):
         return 100, ["flamingo-movement"]
     action = bool(re.search(r"\b(?:protest|revolt|marshim|demonstrat)\w*\b", text))
+    official = bool(_OFFICIAL_NAME.search(text))
     local = bool(
         re.search(
-            r"shqip\w*|tirane?\w*|kryeministr\w*|\brama\b|ministris\w*|"
+            r"shqip\w*|tirane?\w*|kryeministr\w*|ministris\w*|"
             r"skenderbej|zvernec|sazan|rrjoll|vlore|durres|shkoder|korce|elbasan",
             text,
         )
-    )
+    ) or official
     foreign = bool(
         re.search(
             r"gaza|palestin|izrael|prishtin|kosov|serbi|beograd|franc\w*|paris|"
@@ -121,15 +130,18 @@ def protest_topics(title: str, excerpt: str, section: str = "") -> tuple[int, li
     )
     movement_target = bool(
         re.search(
-            r"shqiperi\w*|tirane?\w*|\brama\b|zvernec|sazan|rrjoll",
+            r"shqiperi\w*|tirane?\w*|zvernec|sazan|rrjoll",
             text,
         )
-    )
+    ) or official
     if not local or (foreign and not movement_target):
         return 0, []
     if not action:
         return 0, []
-    if re.search(r"\bberisha\b|partia demokratike|\bpd\b", text) and not re.search(
+    partisan = bool(re.search(r"partia demokratike|\bpd\b", text)) or (
+        bool(_BERISHA_NAME.search(text)) and not _RAMA_NAME.search(text)
+    )
+    if partisan and not re.search(
         r"student\w*|qytetar\w*|revolt\w*|zvernec|sazan|rrjoll",
         text,
     ):

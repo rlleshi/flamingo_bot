@@ -27,6 +27,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--output", type=Path, help="Override FLAMINGO_CITIZENS_DIR / .local/citizens"
     )
     parser.add_argument("--full-rescan", action="store_true", help="Recheck the entire date range")
+    parser.add_argument(
+        "--licensed-full-text",
+        action="store_true",
+        help="Apply separately confirmed full-text permission despite a reference-only signal",
+    )
     parser.add_argument("--max-articles", type=int, default=5000)
     parser.add_argument("--overlap-hours", type=int, default=48)
     parser.add_argument(
@@ -40,6 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output.resolve(),
             dry_run=args.dry_run,
             full_rescan=args.full_rescan,
+            licensed_full_text=args.licensed_full_text,
             max_articles=args.max_articles,
             overlap_hours=args.overlap_hours,
             delay=args.delay,

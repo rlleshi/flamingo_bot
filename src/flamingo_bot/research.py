@@ -30,15 +30,30 @@ def _text(value: object) -> str:
 
 
 def _access_status(record: dict[str, Any]) -> str | None:
-    access = " ".join(_text(record.get(key)) for key in ("access", "access_status", "access_note"))
+    access = " ".join(
+        _text(record.get(key))
+        for key in ("access", "access_status", "access_note", "access_method", "access_mode")
+    )
     access = access.lower().replace("_", " ").replace("-", " ")
+    if record.get("body_read") is False:
+        return None
     # Reading an indexed full body is distinct from seeing only a search snippet.
     if re.search(r"(?:body|text|statement).{0,30}(?:opened|read)", access):
         return "indexed_body_read" if "indexed" in access else "body_read"
     if _text(record.get("access_status")).lower() == "opened_body":
         return "body_read"
+    if (
+        record.get("body_read") is True
+        or "article body" in access
+        or "search returned body" in access
+    ):
+        return "body_read"
     if any(
-        word in access for word in ("indexed only", "snippet", "excerpt", "failed", "search result")
+        word in access
+        for word in (
+            "indexed only", "snippet", "excerpt", "failed", "search result",
+            "preview only", "discovery only", "body unavailable",
+        )
     ):
         return None
     return "not_recorded"
@@ -58,10 +73,12 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
         raise ValueError("A protest research index needs a positive day number")
     if filename is None or int(filename.group(1)) != day:
         raise ValueError("Research filename and protest day disagree")
-    calendar_date = data.get("calendar_date")
+    calendar_date = data.get("calendar_date", data.get("date"))
     if not isinstance(calendar_date, str):
-        raise ValueError("A protest research index needs a calendar_date")
+        raise ValueError("A protest research index needs a calendar_date or date")
     date.fromisoformat(calendar_date)
+    if "calendar_date" in data and "date" in data and data["date"] != calendar_date:
+        raise ValueError("Research calendar_date and date disagree")
     records = data.get("sources")
     if not isinstance(records, list) or not records:
         raise ValueError("A protest research index needs a nonempty sources list")
@@ -87,7 +104,11 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
             continue
         outlet = _text(record.get("outlet"))
         title = _text(record.get("title") or record.get("title_excerpt")) or outlet
-        summary = _text(record.get("summary") or record.get("use") or record.get("supports"))
+        summary = _text(
+            record.get("summary") or record.get("use") or record.get("supports")
+            or record.get("source_use_summary") or record.get("findings")
+            or record.get("source_use") or record.get("event_scope")
+        )
         if not outlet or not title or not summary:
             raise ValueError(
                 "A research source needs outlet, title, and summary/use/supports fields"
@@ -103,6 +124,10 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
                     "publication_date_time",
                     "publication_datetime",
                     "publication_date",
+                    "published_at_local",
+                    "published_local_display",
+                    "published_local",
+                    "published",
                 )
                 if record.get(key)
             ),
@@ -111,17 +136,25 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
         lineage = _text(
             record.get("reporting_lineage") or record.get("independence")
             or record.get("attribution_lineage") or record.get("lineage")
+            or record.get("reporting_origin") or record.get("source_family")
+            or record.get("shared_origin") or record.get("evidence_group")
         )
         caveats = _text(
             record.get("uncertainties") or record.get("source_text_caveat")
             or record.get("attribution_lineage_limitations") or record.get("limitations")
+            or record.get("caution") or record.get("cautions")
         )
+        caveats = (caveats + " " + _text(record.get("qualifications"))).strip()
         event_date = _text(
             record.get("event_date")
             or record.get("event_date_referenced")
             or record.get("event_dates")
         )
-        event_scope = _text(record.get("event_date_scope"))
+        event_scope = _text(
+            record.get("event_date_scope") or record.get("event_date_or_scope")
+            or record.get("event_scope") or record.get("event_date_context")
+            or record.get("event_date_note")
+        )
         if event_date:
             event_note = f"Event date(s) explicitly recorded for this source: {event_date}."
         elif event_scope:
@@ -149,11 +182,35 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
             event_note,
             f"Author's summary of the report: {summary}",
         ]
+        publication_note = _text(record.get("published_time_note"))
+        if publication_note:
+            parts.append(f"Publication timing as recorded in research is {publication_note}.")
         if lineage:
             parts.append(f"Reporting lineage / independence: {lineage}")
         if caveats:
             parts.append(f"Source limitations: {caveats}")
         parts.append(f"Public source: {url}")
+        recent_format = any(
+            key in record
+            for key in (
+                "source_use_summary", "findings", "source_use", "event_scope",
+                "published_at_local", "published_local_display", "published_local",
+                "published", "caution", "cautions", "source_family",
+                "reporting_origin", "access_method", "access_mode", "body_read",
+            )
+        )
+        parser_format = "protest_research/2"
+        if extended_format:
+            parser_format = "protest_research/3"
+        if recent_format:
+            parser_format = "protest_research/4"
+        if "calendar_date" not in data or any(
+            key in record
+            for key in (
+                "qualifications", "event_date_note", "published_time_note", "evidence_group",
+            )
+        ):
+            parser_format = "protest_research/5"
         evidence.append(
             ResearchEvidence(
                 title=f"{outlet}: {title}",
@@ -166,9 +223,7 @@ def read_research_evidence(path: Path) -> list[ResearchEvidence]:
                     "research_date": calendar_date,
                     "reported_event_date": event_date,
                     "source_kind": "protest-research",
-                    "parser_format": (
-                        "protest_research/3" if extended_format else "protest_research/2"
-                    ),
+                    "parser_format": parser_format,
                     "source_urls": [url],
                     "publisher": outlet,
                     "evidence_access": access,

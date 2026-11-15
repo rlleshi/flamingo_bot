@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 from flamingo_bot.planning import (
     MAX_METADATA_QUERIES,
+    PLAN_INSTRUCTIONS,
     PassageSelection,
     SearchPlan,
     build_plan_prompt,
@@ -78,6 +79,17 @@ def test_recent_scope_is_a_hint_not_a_hardcoded_word_list() -> None:
     assert all("October 2026" in value for value in queries)
     assert queries[-1].endswith(question)
     assert plan.dates == []
+
+
+def test_ambiguous_protest_supplies_keep_semantic_and_original_routes() -> None:
+    question = "A morri shqiperia materiale protestash nga emiratet arabe?"
+    semantic = "Albania protest supplies police riot-control equipment deliveries from UAE"
+    plan = prepare_plan(SearchPlan.fallback(semantic), question)
+
+    assert plan.queries == [semantic, question]
+    assert plan.dates == []
+    assert "police riot-control equipment" in PLAN_INSTRUCTIONS
+    assert "never as evidence that a delivery or its purpose is proven" in PLAN_INSTRUCTIONS
 
 
 def test_plan_and_rank_prompts_keep_transcript_untrusted_and_labels_local() -> None:
