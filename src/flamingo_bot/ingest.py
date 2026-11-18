@@ -26,6 +26,7 @@ from flamingo_bot.parsers import NORMALIZATION_VERSION, PARSER_VERSION, parse_so
 from flamingo_bot.providers.azure import AzureModelProvider
 from flamingo_bot.providers.firestore import FirestoreVectorStore
 from flamingo_bot.sources import ResolvedSource, load_source_catalog, resolve_sources
+from flamingo_bot.summaries import summary_chunks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +94,7 @@ async def run_dry_run(settings: Settings, *, local_only: bool = False) -> Ingest
         chunks = SemanticChunker().chunk_documents(documents)
     except ValueError as exc:
         raise SourceValidationError("Unable to chunk the configured sources") from exc
+    chunks.extend(summary_chunks(chunks))
     current_counts = Counter(chunk.content_hash for chunk in chunks)
     if local_only:
         active_generation_id = None
@@ -154,6 +156,8 @@ async def run_publish(settings: Settings) -> IngestionReport:
         chunks = SemanticChunker().chunk_documents(documents)
     except ValueError as exc:
         raise SourceValidationError("Unable to chunk the configured sources") from exc
+    # Dry run and publication add the same computed summary records.
+    chunks.extend(summary_chunks(chunks))
     failed = sum(1 for issue in issues if not issue.reason.startswith("No meaningful"))
     if failed:
         raise PublicationError(f"Refusing publication because {failed} source files failed")

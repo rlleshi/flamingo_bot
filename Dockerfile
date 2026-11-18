@@ -16,7 +16,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     FLAMINGO_ENVIRONMENT=production \
-    FLAMINGO_WIDGET_DIR=/app/widget
+    FLAMINGO_WIDGET_DIR=/app/widget \
+    OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1
 
 WORKDIR /app
 COPY --from=uv /uv /uvx /bin/

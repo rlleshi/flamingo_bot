@@ -291,6 +291,13 @@ def create_app(
         app.state.metrics_limiter = RateLimiter(30, 60)
         app.state.metrics_global_limiter = RateLimiter(120, 60)
         try:
+            # Load the active generation's search index before the first question, so the
+            # request that woke the instance does not also pay for it. A slow or failed load
+            # only logs; the first request that needs the index waits for the same load.
+            try:
+                await asyncio.wait_for(app.state.chat_service.warm_index(), timeout=60)
+            except TimeoutError:
+                logger.warning("index_warmup_failed error=TimeoutError")
             yield
         finally:
             access_logger.removeFilter(access_filter)
@@ -432,6 +439,16 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"ready": False, "error": type(exc).__name__},
             )
+        if provider_status.get("ready"):
+            # Ready means this instance can answer: the active generation is loaded in memory.
+            chat_service: ChatService = request.app.state.chat_service
+            try:
+                provider_status.update(await chat_service.index_status())
+            except FlamingoBotError as exc:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"ready": False, "error": type(exc).__name__},
+                )
         status_code = (
             status.HTTP_200_OK
             if provider_status.get("ready")
@@ -481,10 +498,16 @@ def create_app(
             try:
                 yield _sse("meta", {"request_id": request_id})
                 chat_service: ChatService = request.app.state.chat_service
-                citations, answer = await chat_service.stream(
+                identifier = _safety_identifier(request, runtime_settings, client_key)
+                prepared = await chat_service.prepare(
                     payload.question.strip(),
                     history=payload.history,
-                    safety_identifier=_safety_identifier(request, runtime_settings, client_key),
+                    safety_identifier=identifier,
+                )
+                # Broad questions search far more before the first word; the widget says so.
+                yield _sse("status", {"depth": "broad" if prepared.broad else "standard"})
+                citations, answer = await chat_service.respond(
+                    prepared, safety_identifier=identifier
                 )
                 citation_count = len(citations)
                 for citation in citations:

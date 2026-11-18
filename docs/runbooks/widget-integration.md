@@ -199,6 +199,21 @@ not add one locally. An older cached response cannot roll the display back.
 There is no polling, subscription, browser-side Firestore access, public write
 endpoint, per-answer history, or extra model call.
 
+### Chat stream events and waiting states
+
+`POST /v1/chat` streams `meta` (the request ID), then `status` once the question is
+planned, then one `citation` per passage given to the answer model, then `delta` text and
+finally `done`, or `error` at any point. `status` carries `depth`: `broad` for overviews
+over time, lists, comparisons and the status of several items, which search for about
+ten seconds more before the first word, and `standard` otherwise. Clients that do not
+know an event ignore it.
+
+While no text has arrived the widget shows "Thinking…", or for a `broad` question
+"Diella is thinking harder…" ("Diella po mendon më thellë…" on Albanian pages) with a
+slow light sweeping across the words; visitors who prefer reduced motion see the words
+without the sweep. The answer replaces the label as soon as its first words arrive. The
+source list shows only the citations the answer actually cites.
+
 The runtime atomically increments `flamingo-quotas/service_totals/answers` only
 after a nonempty stream finishes. Production candidate-tag URLs are excluded;
 manual checks on the canonical production URL count like any other completed

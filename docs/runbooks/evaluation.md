@@ -71,15 +71,19 @@ Every question, including the first, receives a bounded plan. The latest origina
 question remains a separate search route alongside its contextualized rewrite.
 An attendance-to-escalation follow-up must not inherit the participation peak's
 date unless the visitor explicitly asks about that event. Generic recent-event
-plans use the current month as a search hint, not an asserted incident date.
+plans use the current month as a planning hint, not an asserted incident date; the
+searches themselves carry no month prefix, and recency widens the vector search.
 
-Vector searches and ordinary metadata lookups share one request-pinned corpus
-generation. Exact anchors cover explicitly requested publishers, dates, protest
-days, participation-index/methodology records and map totals. Metadata retrieval
-is capped at eight queries, 32 matches per query and 16 admitted passages. Stored
-embeddings supply actual cosine distances; no raw vector enters prompts or logs.
-Two-query rank fusion and deduplication produce at most 20 candidates; the
-independent reranker selects at most seven, including fewer or zero when appropriate.
+Vector, keyword and metadata lookups share one request-pinned corpus generation,
+held in memory. Exact anchors cover explicitly requested publishers, dates, protest
+days, participation-index/methodology records and map totals (including the computed
+summary records). Metadata retrieval is capped at eight queries, 32 matches per query
+and 16 admitted passages. Stored embeddings supply actual cosine distances; no raw
+vector enters prompts or logs. For narrow questions, rank fusion per source record
+over every planner query and the visitor's wording produces at most 20 candidates and
+the independent reranker selects at most seven, including fewer or zero when
+appropriate. Broad questions use a pool of 60 and a selection of up to 30, with at
+most three reference-only headlines.
 
 Plans, conversation history and source passages are untrusted data. The answer
 gets the original question, labelled non-evidentiary interpretation, bounded
@@ -87,11 +91,21 @@ history and only the selected evidence. Source dates, estimates, causal claims
 and legal status must retain their attribution and uncertainty.
 
 Planning failures fall back to the latest question alone, never a concatenated
-previous topic. Anchor failures preserve vector results. Invalid/failed rankings
-use deterministic source diversification, while a valid empty selection produces
-the no-evidence reply. These fallbacks log only error classes. Structured calls
-and answer streaming do not silently retry or switch models. An incomplete or
-empty answer stream must end in an error, not a successful completion.
+previous topic. A failed scope call answers the question as narrow; failed expansion
+or follow-up calls search without them. Anchor failures preserve vector results.
+Invalid/failed narrow rankings use deterministic source diversification and failed
+broad rankings keep up to 14 passages spread across months, while a valid empty
+selection produces the no-evidence reply. These fallbacks log only error classes.
+Structured calls and opening the answer stream retry only connections that never
+opened, so no request reached Azure (up to four retries, about four to six seconds of
+backoff in all); failures after sending, timeouts and HTTP errors are not retried. The
+embedding client keeps the SDK's own two retries. Nothing switches models. Structured
+replies are validated in full against their strict schema. The small model sometimes
+sends two messages, one of them corrupted (about one planner call in eight on
+2026-11-18), so each message is also tried on its own and the first that validates is
+used; if none does, the call's fallback applies. A malformed response or a broken
+answer stream ends in a provider error; an incomplete or empty answer stream must end
+in an error, not a successful completion.
 
 The additional planning/ranking calls count toward Azure usage even though each
 visitor request consumes only one application quota unit. No raw visitor

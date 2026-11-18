@@ -31,14 +31,63 @@ Publish embeds only new or changed content, reuses matching active-generation
 embeddings, stages a complete new generation, validates count and representative
 vector lookups across sources, and activates it transactionally.
 
-Serving requires both the base `embedding` vector index and the compound
-`source_id` plus `embedding` index in `READY` state. A bounded query plan uses
-the latest question and browser-replayed context, with up to two semantic routes.
-Retrieval gathers up to seven candidates per source and route (14 for a recent
-plan), applies a `0.65` cosine-distance threshold, and merges/deduplicates a pool
-of at most 20 passages. Explicit publisher, date, protest-day and aggregate
-anchors can recover relevant records. The independent reranker selects at most
-seven passages for the answer model; duplicates are not corroboration. Named
+Publication also adds six computed summary records and a packed search snapshot:
+
+- **Summary records** (`flamingo_bot/summaries.py`, version in each record's
+  `metadata.summary_version`) are counts, rankings and averages over the generation's
+  own Pulsi day lines, protest-map city records and Flamingo Dossier records: the
+  duration and top/lowest days, each month's average and biggest day, Saturdays
+  against other days, protests per country and city, and Dossier cases per legal
+  status and category. No model writes them, every figure traces to published data,
+  and a source without data contributes none. The dry-run report counts them. Each is
+  one chunk built outside the chunker, so it may exceed the 700-token chunk budget (the
+  Dossier status list is about 1,300 tokens); a record over 6,000 tokens is skipped
+  with a `summary_record_skipped` warning.
+- **The search snapshot** (`rag_generations/{generation_id}/search_snapshot`) holds
+  every chunk's text, metadata and embedding packed into documents of at most
+  900,000 bytes (gzip JSON records, little-endian float32 vectors), each checked
+  against a SHA-256 hash on load. The manifest is written last. Serving instances load
+  a generation from it in a second or two; a generation without one (anything
+  published before this change) loads from its chunk documents instead, which costs
+  about ten seconds of CPU when an instance starts. Either way the loaded copy must
+  hold the generation manifest's chunk count and embedding size, or it is not served.
+  The snapshot sits beside the `chunks` subcollection, so chunk counts, publication
+  validation and rollback are unchanged.
+
+Serving loads the active generation into memory when an instance starts (start-up
+waits up to a minute for it) and again whenever `rag_meta/current` moves; every
+request answers from its pinned copy, and requests that arrive during a load wait for
+that same load. A failed load keeps serving the loaded generation, or fails requests
+fast when nothing is loaded, and is retried after a minute. `/status` reports ready
+only once this instance holds the active generation (its `search_index` field names
+it). One index takes about 130 MB; a reload briefly holds two, so the 512 MiB
+instance limit allows a corpus of roughly two to three times today's size. The
+Firestore vector indexes remain required for publication and rollback smoke tests.
+
+Every question gets a typed plan (up to two semantic queries) and, in parallel, a
+scope call that decides whether the question is broad (an overview over time, a
+list or ranking, a comparison, the status of several items) and any period it names.
+
+- **Narrow questions** search every planner query plus the visitor's own wording,
+  with exact cosine search per source (seven candidates per source and query, 14 for
+  a recent plan, within `0.65` cosine distance; a recent plan keeps hits within 0.18
+  of the best) and keyword (BM25) search with ë/ç folded and six-letter word prefixes
+  (20 hits per query), fused per source record. Explicit publisher, date,
+  protest-day and aggregate anchors come first in a pool of at most 20; the
+  independent reranker selects at most seven passages.
+- **Broad questions** also search a sample passage and up to four extra queries
+  written for the question, 30 hits per source and query, kept to the months of the
+  named period (exact anchors are not period-filtered).
+  A follow-up call reads the first 40 hits and writes up to six more queries. The
+  pool of 60 holds the anchors, up to 24 Pulsi day notes for the period, and passages
+  taken month by month in proportion to where the relevant material is. The
+  reranker selects up to 30 (usually 9 to 15), at most three reference-only
+  headlines are kept, and the answer may use up to 3,000 output tokens.
+
+Every failure has a logged fallback: a failed scope call answers as a narrow
+question, a failed expansion or follow-up searches without it, a failed broad
+selection keeps up to 14 passages spread across months, and a failed narrow
+selection keeps the diversified pool order. Duplicates are not corroboration. Named
 places/dates retain their scope, and publication timestamps never become incident
 dates. Vague protest-supplies questions can explore police riot-control equipment
 as a possible meaning in the semantic route. The separate original-question route
@@ -258,3 +307,8 @@ Rollback refuses an active, missing, unvalidated, non-superseded, or
 chunk-count-mismatched target. It reruns a vector lookup, switches
 `rag_meta/current` transactionally, marks the displaced generation superseded,
 and writes `rollback_runs/{rollback_id}`. It never deletes either generation.
+
+Code and data roll back independently. A Cloud Run revision from before the
+in-memory search serves a newer generation unchanged (it reads the summary records
+as ordinary chunks and ignores the snapshot), and the current code serves an older
+generation by loading it from its chunk documents.

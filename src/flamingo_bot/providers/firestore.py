@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections import Counter
@@ -11,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import google.auth
+import numpy as np
 from google.api_core.exceptions import GoogleAPICallError, NotFound
 from google.auth import impersonated_credentials
 from google.auth.credentials import Credentials
@@ -40,6 +42,14 @@ from flamingo_bot.planning import (
     metadata_filters,
 )
 from flamingo_bot.quota import ALLOWED, QuotaDecision, QuotaWindow
+from flamingo_bot.search_index import RECORD_FIELDS, SearchIndex, pack_snapshot, unpack_snapshot
+
+logger = logging.getLogger("flamingo_bot.firestore")
+
+#: Per generation, a packed copy of every chunk and embedding for serving instances to load.
+SNAPSHOT_COLLECTION = "search_snapshot"
+#: Parts per write batch; each part is under 1 MiB, so a batch stays well under 10 MiB.
+SNAPSHOT_BATCH_DOCUMENTS = 8
 
 GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -408,6 +418,124 @@ class FirestoreVectorStore:
         except (GoogleAPICallError, TimeoutError, KeyError, TypeError, ValueError) as exc:
             raise ProviderError("Firestore metadata retrieval failed") from exc
 
+    def _index_from_snapshot(
+        self, generation_id: str, snapshot_ref: Any, manifest: dict[str, Any]
+    ) -> SearchIndex:
+        record_names = [f"records-{index:04d}" for index in range(int(manifest["record_parts"]))]
+        vector_names = [f"vectors-{index:04d}" for index in range(int(manifest["vector_parts"]))]
+        references = [snapshot_ref.document(name) for name in record_names + vector_names]
+        parts: dict[str, bytes] = {}
+        for snapshot in self.client.get_all(references, timeout=60):
+            data = (snapshot.to_dict() or {}) if snapshot.exists else {}
+            value = data.get("data")
+            if isinstance(value, bytes):
+                parts[snapshot.id] = value
+        if any(name not in parts for name in record_names + vector_names):
+            raise ValueError("Search snapshot is missing parts")
+        return unpack_snapshot(
+            generation_id,
+            manifest,
+            [parts[name] for name in record_names],
+            [parts[name] for name in vector_names],
+        )
+
+    def _index_from_chunks(self, generation_id: str, generation_ref: Any) -> SearchIndex:
+        """Slow path for generations published without a snapshot: decoding every embedding
+        array takes seconds of CPU."""
+        fields = [field for field in RECORD_FIELDS if field != "chunk_id"] + ["embedding"]
+        records: list[dict[str, Any]] = []
+        rows: list[np.ndarray[Any, np.dtype[np.float32]]] = []
+        for snapshot in generation_ref.collection("chunks").select(fields).stream(timeout=120):
+            data = snapshot.to_dict() or {}
+            embedding = data.pop("embedding", None)
+            if embedding is None:
+                raise ValueError("An indexed chunk is missing its embedding")
+            rows.append(np.asarray(list(embedding), dtype=np.float32))
+            records.append(
+                {"chunk_id": snapshot.id, **{field: data.get(field) for field in fields[:-1]}}
+            )
+        if not records:
+            raise ValueError("The generation has no chunks")
+        return SearchIndex(generation_id, records, np.vstack(rows))
+
+    def _load_index_sync(self, generation_id: str) -> SearchIndex:
+        generation_id = validate_generation_id(generation_id)
+        generation_ref = self.client.collection("rag_generations").document(generation_id)
+        generation = generation_ref.get(timeout=10, retry=None)
+        if not generation.exists:
+            raise ValueError("The generation to load has no manifest")
+        contract = generation.to_dict() or {}
+        count = contract.get("chunk_count")
+        dimensions = contract.get("embedding_dimensions")
+        if not isinstance(count, int) or count <= 0 or not isinstance(dimensions, int):
+            raise ValueError("The generation manifest has invalid counts")
+
+        def complete(index: SearchIndex) -> SearchIndex:
+            """Every chunk the manifest promises, with the manifest's embedding size."""
+            if len(index) != count or index.dimensions != dimensions:
+                raise ValueError("The loaded index does not match its generation manifest")
+            return index
+
+        snapshot_ref = generation_ref.collection(SNAPSHOT_COLLECTION)
+        manifest = snapshot_ref.document("manifest").get(timeout=10, retry=None)
+        if manifest.exists:
+            snapshot = manifest.to_dict() or {}
+            try:
+                if (
+                    snapshot.get("generation_id") not in (None, generation_id)
+                    or snapshot.get("chunk_count") != count
+                    or snapshot.get("dimensions") != dimensions
+                ):
+                    raise ValueError("The search snapshot belongs to another generation")
+                return complete(self._index_from_snapshot(generation_id, snapshot_ref, snapshot))
+            except (KeyError, TypeError, ValueError, OSError, EOFError) as exc:
+                logger.warning(
+                    "search_snapshot_invalid generation=%s error=%s",
+                    generation_id,
+                    type(exc).__name__,
+                )
+        else:
+            logger.warning("search_snapshot_missing generation=%s", generation_id)
+        return complete(self._index_from_chunks(generation_id, generation_ref))
+
+    async def load_index(self, generation_id: str) -> SearchIndex:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._load_index_sync, generation_id), timeout=150
+            )
+        except (GoogleAPICallError, TimeoutError, KeyError, TypeError, ValueError) as exc:
+            raise ProviderError("Firestore search index load failed") from exc
+
+    def _write_search_snapshot(
+        self,
+        generation_ref: Any,
+        manifest: GenerationManifest,
+        chunks: Sequence[ChunkRecord],
+    ) -> None:
+        snapshot_manifest, record_parts, vector_parts = pack_snapshot(
+            chunks, manifest.embedding_dimensions
+        )
+        collection = generation_ref.collection(SNAPSHOT_COLLECTION)
+        documents = [
+            (f"records-{index:04d}", {"index": index, "data": part})
+            for index, part in enumerate(record_parts)
+        ] + [
+            (f"vectors-{index:04d}", {"index": index, "data": part})
+            for index, part in enumerate(vector_parts)
+        ]
+        for start in range(0, len(documents), SNAPSHOT_BATCH_DOCUMENTS):
+            batch = self.client.batch()
+            for name, value in documents[start : start + SNAPSHOT_BATCH_DOCUMENTS]:
+                batch.create(collection.document(name), value)
+            batch.commit(timeout=60)
+        # The manifest goes last, so a reader that finds it also finds every part.
+        batch = self.client.batch()
+        batch.create(
+            collection.document("manifest"),
+            {**snapshot_manifest, "generation_id": manifest.generation_id},
+        )
+        batch.commit(timeout=20)
+
     def _load_active_snapshot_sync(
         self, contract: EmbeddingReuseContract
     ) -> ActiveGenerationSnapshot:
@@ -537,6 +665,8 @@ class FirestoreVectorStore:
                 raise PublicationError(
                     f"Staged generation has {written_count} chunks; expected {manifest.chunk_count}"
                 )
+
+            self._write_search_snapshot(generation_ref, manifest, chunks)
 
             representative_chunks: dict[str, ChunkRecord] = {}
             for chunk in chunks:

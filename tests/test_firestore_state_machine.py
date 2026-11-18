@@ -133,6 +133,10 @@ class FakeClient:
     def transaction(self) -> FakeTransaction:
         return FakeTransaction()
 
+    def get_all(self, references: list[FakeDocument], **kwargs: Any) -> list[FakeSnapshot]:
+        del kwargs
+        return [FakeSnapshot(ref.path, self.documents.get(ref.path)) for ref in references]
+
     def close(self) -> None:
         pass
 
@@ -261,3 +265,84 @@ def test_rollback_revalidates_retained_chunk_count(
 
     assert client.documents["rag_meta/current"]["generation_id"] == "generation-two"
     assert "rollback_runs/rollback-test-002" not in client.documents
+
+
+def test_publication_writes_a_search_snapshot_that_loads_back(
+    store: tuple[FirestoreVectorStore, FakeClient],
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+    prefix = "rag_generations/generation-one/search_snapshot/"
+    names = sorted(path[len(prefix) :] for path in client.documents if path.startswith(prefix))
+    assert names == ["manifest", "records-0000", "vectors-0000"]
+    assert client.documents[prefix + "manifest"]["chunk_count"] == 1
+    index = vector_store._load_index_sync("generation-one")
+    assert index.generation_id == "generation-one"
+    assert [record["chunk_id"] for record in index.records] == ["chunk-test"]
+    hits = index.search([0.1, 0.2, 0.3, 0.4], limit=1, distance_threshold=0.01)
+    assert [hit.chunk_id for hit in hits] == ["chunk-test"]
+
+
+def test_generation_without_a_snapshot_loads_from_its_chunks(
+    store: tuple[FirestoreVectorStore, FakeClient],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+    del client.documents["rag_generations/generation-one/search_snapshot/manifest"]
+    index = vector_store._load_index_sync("generation-one")
+    assert [record["chunk_id"] for record in index.records] == ["chunk-test"]
+    assert index.records[0]["text"] == "Evidence text"
+    assert "search_snapshot_missing" in caplog.text
+
+
+def test_a_damaged_snapshot_falls_back_to_the_chunks(
+    store: tuple[FirestoreVectorStore, FakeClient],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+    part = client.documents["rag_generations/generation-one/search_snapshot/vectors-0000"]
+    part["data"] = bytes(len(part["data"]))
+    index = vector_store._load_index_sync("generation-one")
+    assert [record["chunk_id"] for record in index.records] == ["chunk-test"]
+    assert "search_snapshot_invalid" in caplog.text
+
+
+def test_a_snapshot_for_another_embedding_size_is_not_used(
+    store: tuple[FirestoreVectorStore, FakeClient],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+    client.documents["rag_generations/generation-one/search_snapshot/manifest"]["dimensions"] = 8
+    index = vector_store._load_index_sync("generation-one")
+    assert index.dimensions == 4
+    assert "search_snapshot_invalid" in caplog.text
+
+
+def test_an_incomplete_generation_is_never_served(
+    store: tuple[FirestoreVectorStore, FakeClient],
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+    client.documents["rag_generations/generation-one"]["chunk_count"] = 2
+    with pytest.raises(ValueError, match="manifest"):
+        vector_store._load_index_sync("generation-one")
+
+
+def test_a_snapshot_failure_fails_the_publication_and_keeps_the_pointer(
+    store: tuple[FirestoreVectorStore, FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector_store, client = store
+    vector_store._publish_generation_sync(manifest("generation-one"), [chunk()])
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("cannot pack")
+
+    monkeypatch.setattr(firestore_module, "pack_snapshot", broken)
+    with pytest.raises(PublicationError):
+        vector_store._publish_generation_sync(manifest("generation-two"), [chunk()])
+    assert client.documents["rag_meta/current"]["generation_id"] == "generation-one"
+    assert client.documents["rag_generations/generation-two"]["status"] == "failed"

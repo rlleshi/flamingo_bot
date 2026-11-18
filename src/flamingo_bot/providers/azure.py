@@ -2,14 +2,60 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import asyncio
+import random
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
-from openai import APIError, AsyncAzureOpenAI
+import httpx
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncAzureOpenAI
 from pydantic import BaseModel, ValidationError
 
 from flamingo_bot.config import ChatModelConfig, ModelConfig, Settings
 from flamingo_bot.errors import ProviderError
-from flamingo_bot.planning import PassageSelection, SearchPlan
+from flamingo_bot.planning import (
+    BroadSelection,
+    FollowUpQueries,
+    PassageSelection,
+    QueryExpansion,
+    QuestionScope,
+    SearchPlan,
+)
+
+#: Pauses, before jitter, between attempts when a connection fails (timeouts excluded):
+#: at most about six seconds in all, and only when no request reached the model.
+CONNECT_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
+
+
+def first_valid[ModelT: BaseModel](
+    schema: type[ModelT], candidates: Sequence[str], description: str
+) -> ModelT:
+    """The first candidate that validates in full against the strict schema."""
+    for text in candidates:
+        try:
+            return schema.model_validate_json(text)
+        except ValidationError:
+            continue
+    raise ProviderError(f"Azure returned an invalid {description}")
+
+
+def _never_sent(exc: APIConnectionError) -> bool:
+    """True only when the connection could not be opened (for example a TLS handshake that
+    was dropped), so no request reached Azure and a retry cannot duplicate one."""
+    return not isinstance(exc, APITimeoutError) and isinstance(exc.__cause__, httpx.ConnectError)
+
+
+async def with_connect_retry[ResultT](call: Callable[[], Awaitable[ResultT]]) -> ResultT:
+    """Retry a model call whose connection could not be opened. Failures after the request
+    was sent, timeouts and HTTP errors are not retried, so nothing runs twice and the
+    call's own deadline still bounds each attempt."""
+    for delay in CONNECT_RETRY_DELAYS:
+        try:
+            return await call()
+        except APIConnectionError as exc:
+            if not _never_sent(exc):
+                raise
+            await asyncio.sleep(delay * random.uniform(1.0, 1.5))
+    return await call()
 
 
 class AzureModelProvider:
@@ -79,32 +125,50 @@ class AzureModelProvider:
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
-    ) -> str:
-        """Use strict JSON without retaining visitor input or logging provider payloads."""
+    ) -> list[str]:
+        """Use strict JSON without retaining visitor input or logging provider payloads.
+
+        Returns the reply's text candidates: the whole output text, then each output message
+        on its own. The model occasionally sends two messages, one of them corrupted, and the
+        SDK's joined output text then fails to parse; callers keep the first candidate that
+        validates in full.
+        """
         try:
-            response = await client.with_options(max_retries=0).responses.create(
-                model=config.deployment,
-                instructions=instructions,
-                input=prompt,
-                reasoning={"effort": config.reasoning_effort},
-                text={
-                    "verbosity": config.text_verbosity,
-                    "format": {
-                        "type": "json_schema",
-                        "name": schema.__name__,
-                        "schema": schema.model_json_schema(),
-                        "strict": True,
+            response = await with_connect_retry(
+                lambda: client.with_options(max_retries=0).responses.create(
+                    model=config.deployment,
+                    instructions=instructions,
+                    input=prompt,
+                    reasoning={"effort": config.reasoning_effort},
+                    text={
+                        "verbosity": config.text_verbosity,
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema.model_config.get("title") or schema.__name__,
+                            "schema": schema.model_json_schema(),
+                            "strict": True,
+                        },
                     },
-                },
-                max_output_tokens=config.max_output_tokens,
-                safety_identifier=safety_identifier,
-                store=False,
+                    max_output_tokens=config.max_output_tokens,
+                    safety_identifier=safety_identifier,
+                    store=False,
+                )
             )
         except APIError as exc:
             raise ProviderError("Azure structured retrieval call failed") from exc
-        if response.status != "completed":
+        try:
+            status = response.status
+            candidates = [response.output_text or ""]
+            for item in getattr(response, "output", None) or []:
+                for content in getattr(item, "content", None) or []:
+                    text = getattr(content, "text", None)
+                    if isinstance(text, str) and text not in candidates:
+                        candidates.append(text)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ProviderError("Azure structured retrieval response was malformed") from exc
+        if status != "completed":
             raise ProviderError("Azure structured retrieval response was incomplete")
-        return response.output_text or ""
+        return candidates
 
     async def plan_search(
         self,
@@ -113,7 +177,7 @@ class AzureModelProvider:
         prompt: str,
         safety_identifier: str | None,
     ) -> SearchPlan:
-        text = await self._structured_completion(
+        candidates = await self._structured_completion(
             client=self.condense_client,
             config=self.config.condense,
             schema=SearchPlan,
@@ -121,10 +185,71 @@ class AzureModelProvider:
             prompt=prompt,
             safety_identifier=safety_identifier,
         )
-        try:
-            return SearchPlan.model_validate_json(text)
-        except ValidationError as exc:
-            raise ProviderError("Azure returned an invalid retrieval plan") from exc
+        return first_valid(SearchPlan, candidates, "retrieval plan")
+
+    async def _condensed[ModelT: BaseModel](
+        self,
+        schema: type[ModelT],
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+        description: str,
+    ) -> ModelT:
+        candidates = await self._structured_completion(
+            client=self.condense_client,
+            config=self.config.condense,
+            schema=schema,
+            instructions=instructions,
+            prompt=prompt,
+            safety_identifier=safety_identifier,
+        )
+        return first_valid(schema, candidates, description)
+
+    async def classify_scope(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> QuestionScope:
+        return await self._condensed(
+            QuestionScope,
+            instructions=instructions,
+            prompt=prompt,
+            safety_identifier=safety_identifier,
+            description="question scope",
+        )
+
+    async def expand_question(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> QueryExpansion:
+        return await self._condensed(
+            QueryExpansion,
+            instructions=instructions,
+            prompt=prompt,
+            safety_identifier=safety_identifier,
+            description="query expansion",
+        )
+
+    async def follow_up_queries(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> FollowUpQueries:
+        return await self._condensed(
+            FollowUpQueries,
+            instructions=instructions,
+            prompt=prompt,
+            safety_identifier=safety_identifier,
+            description="follow-up query list",
+        )
 
     async def select_passages(
         self,
@@ -133,7 +258,7 @@ class AzureModelProvider:
         prompt: str,
         safety_identifier: str | None,
     ) -> PassageSelection:
-        text = await self._structured_completion(
+        candidates = await self._structured_completion(
             client=self.rerank_client,
             config=self.config.rerank,
             schema=PassageSelection,
@@ -141,10 +266,24 @@ class AzureModelProvider:
             prompt=prompt,
             safety_identifier=safety_identifier,
         )
-        try:
-            return PassageSelection.model_validate_json(text)
-        except ValidationError as exc:
-            raise ProviderError("Azure returned an invalid passage selection") from exc
+        return first_valid(PassageSelection, candidates, "passage selection")
+
+    async def select_broad_passages(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> BroadSelection:
+        candidates = await self._structured_completion(
+            client=self.rerank_client,
+            config=self.config.rerank,
+            schema=BroadSelection,
+            instructions=instructions,
+            prompt=prompt,
+            safety_identifier=safety_identifier,
+        )
+        return first_valid(BroadSelection, candidates, "broad passage selection")
 
     async def stream_answer(
         self,
@@ -152,18 +291,22 @@ class AzureModelProvider:
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         try:
-            stream = await self.chat_client.responses.create(
-                model=self.config.chat.deployment,
-                instructions=instructions,
-                input=prompt,
-                reasoning={"effort": self.config.chat.reasoning_effort},
-                text={"verbosity": self.config.chat.text_verbosity},
-                max_output_tokens=self.config.chat.max_output_tokens,
-                safety_identifier=safety_identifier,
-                store=False,
-                stream=True,
+            # Only opening the stream is retried; nothing has reached the visitor yet.
+            stream = await with_connect_retry(
+                lambda: self.chat_client.responses.create(
+                    model=self.config.chat.deployment,
+                    instructions=instructions,
+                    input=prompt,
+                    reasoning={"effort": self.config.chat.reasoning_effort},
+                    text={"verbosity": self.config.chat.text_verbosity},
+                    max_output_tokens=max_output_tokens or self.config.chat.max_output_tokens,
+                    safety_identifier=safety_identifier,
+                    store=False,
+                    stream=True,
+                )
             )
             completed = False
             received_text = False
@@ -172,9 +315,11 @@ class AzureModelProvider:
                     event_type = getattr(event, "type", "")
                     if event_type == "response.output_text.delta":
                         delta = getattr(event, "delta", "")
+                        if not isinstance(delta, str):
+                            raise ProviderError("Azure answer stream sent a malformed delta")
                         if delta:
                             received_text = True
-                            yield str(delta)
+                            yield delta
                     elif event_type in {"response.failed", "response.incomplete"}:
                         raise ProviderError(f"Azure response stream ended as {event_type}")
                     elif event_type == "response.completed":
@@ -183,6 +328,8 @@ class AzureModelProvider:
                 raise ProviderError("Azure response stream was empty or had no completion event")
         except APIError as exc:
             raise ProviderError("Azure answer request failed") from exc
+        except httpx.HTTPError as exc:  # transport failures while reading the stream
+            raise ProviderError("Azure answer stream failed") from exc
 
     async def close(self) -> None:
         await self.chat_client.close()

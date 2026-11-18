@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Literal
+from typing import Any, Literal
 
 import httpx2
 import pytest
@@ -89,6 +89,43 @@ async def test_health_and_readiness_are_distinct() -> None:
         assert status_response.status_code == 200
         assert status_response.json()["active_generation"] == "test"
         assert status_response.json()["created_at"] == "2026-08-23T00:00:00+00:00"
+        # Ready means the instance holds the active generation's search index.
+        assert status_response.json()["search_index"] == {"generation": "test", "chunks": 1}
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_when_the_search_index_cannot_load() -> None:
+    from flamingo_bot.errors import ProviderError
+
+    class Unloadable(InMemoryVectorStore):
+        async def load_index(self, generation_id: str) -> Any:
+            raise ProviderError("private detail")
+
+    embedder = HashEmbedder()
+    chunk = RetrievedChunk(
+        chunk_id="chunk-one",
+        source_id="flamingo-revolution",
+        source_label="Flamingo Revolution",
+        title="About the movement",
+        text="Flamingo Revolution is an independent civic movement.",
+        canonical_url="https://www.flamingorevolution.eu/rreth-nesh/",
+        distance=0.0,
+    )
+    vector = (await embedder.embed_texts(["movement"]))[0]
+    broken = create_app(
+        settings=Settings(_env_file=None, flamingo_allowed_origins="http://localhost:5173"),
+        services=ServiceBundle(
+            embedder=embedder,
+            vector_store=Unloadable([(chunk, vector)]),
+            answer_generator=ScriptedAnswerGenerator("unused"),
+        ),
+    )
+    async with broken.router.lifespan_context(broken):
+        transport = httpx2.ASGITransport(app=broken)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/status")
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "error": "ProviderError"}
 
 
 @pytest.mark.asyncio
@@ -109,6 +146,28 @@ async def test_chat_stream_contains_citation_delta_and_completion() -> None:
     assert "event: delta" in response.text
     assert "event: done" in response.text
     assert len(generator.calls) == 1
+    # The status event arrives after planning and before any evidence or answer text.
+    status_at = response.text.index('event: status\ndata: {"depth": "standard"}')
+    assert status_at < response.text.index("event: citation")
+
+
+@pytest.mark.asyncio
+async def test_broad_questions_announce_themselves_before_retrieval() -> None:
+    from flamingo_bot.planning import QuestionScope
+
+    planner = ScriptedPlanner(
+        scope=QuestionScope(broad=True, period_start="", period_end=""),
+    )
+    app, _ = await build_app(planner=planner)
+    async with app.router.lifespan_context(app):
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/v1/chat",
+                headers={"Origin": "http://localhost:5173"},
+                json={"question": "Tell me about the movement over the months"},
+            )
+    assert 'event: status\ndata: {"depth": "broad"}' in response.text
 
 
 @pytest.mark.asyncio
@@ -687,7 +746,7 @@ async def test_cancelled_stream_does_not_count() -> None:
         raise asyncio.CancelledError
 
     async with app.router.lifespan_context(app):
-        app.state.chat_service.stream = cancelled
+        app.state.chat_service.prepare = cancelled
         # Exercise the generator directly: ASGI transports do not model a real
         # disconnected socket consistently, while cancellation must propagate.
         from starlette.requests import Request
