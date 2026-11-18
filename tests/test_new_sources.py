@@ -73,6 +73,9 @@ def test_map_ingests_each_city_and_protest_with_day_counts(tmp_path: Path) -> No
     assert "Protest days for this city: 3" in city.text
     assert "Protest days in this record: 3" in protest.text
     assert "https://example.org/event" in protest.text
+    assert protest.metadata["event_start_date"] == "2026-09-01"
+    assert protest.metadata["event_end_date"] == "2026-09-03"
+    assert "event_date" not in protest.metadata  # not a date anchor
     assert overview.metadata["protest_record_count"] == 1
     assert overview.metadata["protest_day_count"] == 3
     assert "1 qytete ose lokacione" in overview.text

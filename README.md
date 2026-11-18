@@ -35,9 +35,10 @@ Live retrieval searches every planner query and the visitor's own wording with
 vector and keyword search, fused per source record, with bounded metadata anchors
 first. Narrow questions rank at most 20 candidates and pass at most seven passages
 to Sol. Broad questions (overviews over time, lists, comparisons, the status of
-several items) add written queries and a follow-up search, rank a pool of 60 spread
-across the period's months, and pass up to 30 passages for an answer of up to 3,000
-tokens. All reads in one request use the same published generation. Publication
+several items) add written queries and a follow-up search, look only inside the
+period the question names (widening to its whole months when that finds almost
+nothing), rank a pool of 60 spread across its months, and pass up to 30 passages for
+an answer of up to 3,000 tokens. All reads in one request use the same published generation. Publication
 adds computed summary records (Pulsi, map and Dossier counts and rankings) and a
 packed snapshot that serving instances load quickly. The answer instructions forbid
 naming private people (protesters, the injured or detained, their relatives); the

@@ -5,6 +5,7 @@ All plans and passages are untrusted data. This module performs no I/O.
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import re
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from flamingo_bot.conversation import render_transcript
 from flamingo_bot.models import ConversationTurn, RetrievedChunk
 
-RETRIEVAL_VERSION = "3.0.0"
+RETRIEVAL_VERSION = "3.1.0"
 SOURCE_IDS = ("flamingo-dossier", "flamingo-revolution", "diaspora-zbarkon", "lapsi", "citizens")
 MAX_CANDIDATES = 20
 MAX_ANCHORS = 16
@@ -277,8 +278,9 @@ def scope_period(scope: QuestionScope) -> tuple[str | None, str | None]:
             date.fromisoformat(value if len(value) == 10 else value + "-01")
         except ValueError:
             return None
-        if len(value) == 7:  # a month: compare from its first day or up to its last
-            return value + ("-31" if end else "-01")
+        if len(value) == 7:  # a month: from its first day, or up to its real last day
+            last = calendar.monthrange(int(value[:4]), int(value[5:]))[1]
+            return f"{value}-{last:02d}" if end else f"{value}-01"
         return value
 
     start, end = bound(scope.period_start, end=False), bound(scope.period_end, end=True)

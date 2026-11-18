@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import date
 from typing import Any
 
@@ -30,6 +31,7 @@ from flamingo_bot.retrieval import (
     IndexCache,
     broad_pool,
     spread_by_month,
+    whole_months,
 )
 from flamingo_bot.search_index import SearchIndex
 
@@ -222,6 +224,10 @@ def test_spread_by_month_takes_each_month_in_turn() -> None:
 def test_scope_period_accepts_dates_and_months_and_ignores_text() -> None:
     month = QuestionScope(broad=True, period_start="2026-10", period_end="2026-10")
     assert scope_period(month) == ("2026-10-01", "2026-10-31")
+    september = QuestionScope(broad=True, period_start="2026-09", period_end="2026-09")
+    assert scope_period(september) == ("2026-09-01", "2026-09-30")  # a real last day
+    february = QuestionScope(broad=True, period_start="2026-02", period_end="2026-02")
+    assert scope_period(february) == ("2026-02-01", "2026-02-28")
     text = QuestionScope(broad=True, period_start="tetor", period_end="")
     assert scope_period(text) == (None, None)
 
@@ -329,3 +335,74 @@ def test_scope_period_ignores_impossible_and_reversed_dates() -> None:
     assert scope_period(impossible) == (None, "2026-03-10")
     reversed_range = QuestionScope(broad=True, period_start="2026-11-01", period_end="2026-10-01")
     assert scope_period(reversed_range) == (None, None)
+
+
+def october_week() -> tuple[QuestionScope, InMemoryVectorStore]:
+    """Three records from early October, closest to every query, and one inside 13-17 October."""
+    records = [
+        (passage(f"early{n}", event_date=f"2026-10-0{n + 1}"), [1.0, 0.0]) for n in range(3)
+    ]
+    records.append((passage("inside", event_date="2026-10-15"), [0.8, 0.6]))
+    week = QuestionScope(broad=True, period_start="2026-10-13", period_end="2026-10-17")
+    return week, InMemoryVectorStore(records)
+
+
+@pytest.mark.asyncio
+async def test_a_named_period_is_searched_before_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
+    from flamingo_bot import retrieval
+
+    monkeypatch.setattr(retrieval, "BROAD_HITS_PER_QUERY", 2)
+    monkeypatch.setattr(retrieval, "BROAD_MIN_DATED_PASSAGES", 1)
+    week, store = october_week()
+    ranker = ScriptedRanker(broad_ids=["C1"])
+    chat, _, _ = service(broad_planner(scope=week), ranker, store)
+    await chat.stream(QUESTION, as_of=AS_OF)
+    prompt = json.loads(str(ranker.broad_calls[0]["prompt"]))
+    assert [item["title"] for item in prompt["passages"]] == ["Report inside"]
+
+
+@pytest.mark.asyncio
+async def test_a_period_with_too_little_also_searches_its_whole_months(caplog: Any) -> None:
+    caplog.set_level(logging.INFO, logger="flamingo_bot.retrieval")
+    week, store = october_week()
+    ranker = ScriptedRanker(broad_ids=["C1"])
+    chat, _, _ = service(broad_planner(scope=week), ranker, store)
+    await chat.stream(QUESTION, as_of=AS_OF)
+    prompt = json.loads(str(ranker.broad_calls[0]["prompt"]))
+    titles = {item["title"] for item in prompt["passages"]}
+    assert titles == {"Report inside", "Report early0", "Report early1", "Report early2"}
+    assert "broad_period dated=1 widened=True" in caplog.text
+
+
+def test_whole_months_stretches_a_period_to_its_months() -> None:
+    assert whole_months("2026-10-13", "2026-10-17") == ("2026-10-01", "2026-10-31")
+    assert whole_months(None, "2026-11-18") == (None, "2026-11-30")
+    assert whole_months("2026-09-07", None) == ("2026-09-01", None)
+
+
+@pytest.mark.asyncio
+async def test_the_selector_fallback_keeps_the_relevance_cutoff() -> None:
+    records = [
+        (passage("near", event_date="2026-10-15"), [1.0, 0.0]),
+        (passage("far", event_date="2026-10-16"), [0.0, 1.0]),  # found by its words only
+        (
+            passage("day-140", title="Pulsi day 140", section="day", protest_day=140,
+                    event_date="2026-10-17"),
+            [0.0, 1.0],
+        ),
+    ]
+    ranker = ScriptedRanker(broad_ids=ProviderError("busy"))
+    chat, _, _ = service(broad_planner(), ranker, InMemoryVectorStore(records))
+    citations, _ = await chat.stream(QUESTION, as_of=AS_OF)
+    assert {citation.title for citation in citations} == {"Report near", "Pulsi day 140"}
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_with_nothing_relevant_answers_without_evidence() -> None:
+    records = [(passage("far", event_date="2026-10-16"), [0.0, 1.0])]
+    ranker = ScriptedRanker(broad_ids=ProviderError("busy"))
+    chat, _, generator = service(broad_planner(), ranker, InMemoryVectorStore(records))
+    citations, stream = await chat.stream(QUESTION, as_of=AS_OF)
+    assert citations == []
+    assert [part async for part in stream]
+    assert generator.calls == []

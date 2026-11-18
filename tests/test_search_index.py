@@ -215,3 +215,60 @@ def test_day_notes_skip_zero_queries_key_undated_days_by_date_and_cap_the_budget
     assert [note.chunk_id for note in notes] == ["a", "b"]
     assert all(note.distance < 0.2 for note in notes)
     assert index.day_notes([[0.0, 0.0]], start=None, end=None, budget=2) == []
+
+
+def test_period_mask_admits_overlapping_events_late_reports_and_undated_records() -> None:
+    rows = [
+        row("same-month-before", event_date="2026-10-01"),
+        row("inside", event_date="2026-10-15"),
+        row("a-day-late", event_date="2026-10-18"),
+        row("multi-day", event_start_date="2026-10-10", event_end_date="2026-10-13"),
+        row("multi-day-before", event_start_date="2026-10-08", event_end_date="2026-10-12"),
+        row("report-next-day", published_date="2026-10-18T09:00:00Z"),
+        row("report-two-days-on", research_date="2026-10-19"),
+        row("report-three-days-on", published_date="2026-10-20"),
+        row("report-before", published_date="2026-10-12"),
+        row("free-text", reported_event_date="mid-October", research_date="2026-10-16"),
+        row("undated"),
+    ]
+    index = index_of(rows, [[1.0, 0.0]] * len(rows))
+    mask = index.period_mask("2026-10-13", "2026-10-17")
+    assert mask is not None
+    admitted = {item["chunk_id"] for item, allowed in zip(rows, mask, strict=True) if allowed}
+    assert admitted == {
+        "inside", "multi-day", "report-next-day", "report-two-days-on", "free-text", "undated"
+    }
+    assert index.period_mask(None, None) is None
+    assert not index.is_dated("undated") and index.is_dated("multi-day")
+
+
+def test_period_slack_for_reports_crosses_the_month_end() -> None:
+    rows = [
+        row("nov-2", published_date="2026-11-02"),
+        row("nov-3", published_date="2026-11-03"),
+        row("event-nov-1", event_date="2026-11-01"),
+    ]
+    mask = index_of(rows, [[1.0, 0.0]] * 3).period_mask("2026-10-01", "2026-10-31")
+    assert mask is not None and mask.tolist() == [True, False, False]
+
+
+def test_masked_searches_rank_only_inside_the_period() -> None:
+    rows = [row(f"out{n}", event_date=f"2026-09-0{n + 1}") for n in range(3)]
+    rows.append(row("in", event_date="2026-10-15"))
+    index = index_of(rows, [[1.0, 0.0]] * 3 + [[0.8, 0.6]])
+    mask = index.period_mask("2026-10-13", "2026-10-17")
+    nearest = index.search([1.0, 0.0], limit=2, distance_threshold=0.9)
+    assert [hit.chunk_id for hit in nearest] == ["out0", "out1"]
+    inside = index.search([1.0, 0.0], limit=2, distance_threshold=0.9, allowed=mask)
+    assert [hit.chunk_id for hit in inside] == ["in"]  # not crowded out by closer records
+    assert [hit.chunk_id for hit in index.keyword_search("evidence", 2, mask)] == ["in"]
+
+
+def test_map_protest_dates_do_not_become_date_anchors() -> None:
+    rows = [
+        row("pulsi", event_date="2026-10-24", section="day"),
+        row("map", content_type="map-protest", event_start_date="2026-10-24"),
+    ]
+    index = index_of(rows, [[1.0, 0.0]] * 2)
+    plan = SearchPlan.fallback("24 October").model_copy(update={"dates": ["2026-10-24"]})
+    assert [item.chunk_id for item in index.metadata_passages(plan, [[1.0, 0.0]])] == ["pulsi"]

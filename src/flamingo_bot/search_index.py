@@ -2,9 +2,9 @@
 
 A ``SearchIndex`` holds every chunk of one generation with its embedding and answers, without
 I/O: exact cosine vector search per source (the same results as Firestore's flat vector index),
-exact metadata lookups with Firestore's ordering and limits, keyword (BM25) search, and the
-Pulsi day notes of a period. Each request pins one index, so every lookup in it reads the same
-generation.
+exact metadata lookups with Firestore's ordering and limits, keyword (BM25) search, the Pulsi
+day notes of a period, and a period mask that limits both searches to a named period. Each
+request pins one index, so every lookup in it reads the same generation.
 
 The packed snapshot written at publication lets a serving instance load a generation from a
 few large documents instead of decoding thousands of embedding arrays one by one.
@@ -20,6 +20,7 @@ import re
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -36,6 +37,8 @@ from flamingo_bot.planning import (
 )
 
 FloatMatrix = npt.NDArray[np.float32]
+#: One flag per record of an index: which records a search may return.
+Mask = npt.NDArray[np.bool_]
 
 #: Fields kept for every chunk; the embedding is stored separately as one float32 matrix.
 RECORD_FIELDS = (
@@ -57,6 +60,19 @@ SNAPSHOT_PART_BYTES = 900_000
 SNAPSHOT_DTYPE = "<f4"
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+#: A period keeps passages dated by publication (articles, research notes) this many days past
+#: its last day, because reports follow the events they describe.
+PUBLICATION_SLACK_DAYS = 2
+#: The date fields a period is checked against, in ``chunk_month``'s order, and whether each is
+#: an event's date. Map protests carry a start and an end, so a multi-day protest overlaps.
+_DATE_FIELDS = (
+    ("event_date", True),
+    ("event_start_date", True),
+    ("reported_event_date", True),
+    ("research_date", False),
+    ("published_date", False),
+)
+_UNDATED, _EVENT, _PUBLISHED = 0, 1, 2
 _FOLD = str.maketrans({"ë": "e", "Ë": "e", "ç": "c", "Ç": "c"})
 _STOP_WORDS = frozenset(
     """dhe e te të në ne nga per për me më që qe se si i u ka kanë kane ishte është eshte janë
@@ -78,6 +94,30 @@ def chunk_month(chunk: RetrievedChunk) -> str:
         if isinstance(value, str) and _ISO_DATE.match(value):
             return value[:7]
     return "undated"
+
+
+def _day(value: object) -> int | None:
+    """An ISO date's day number (its ordinal), or None for anything else."""
+    if not isinstance(value, str) or not _ISO_DATE.match(value):
+        return None
+    try:
+        return date.fromisoformat(value[:10]).toordinal()
+    except ValueError:
+        return None
+
+
+def record_span(metadata: dict[str, Any]) -> tuple[int, int, int]:
+    """A record's first day, last day and kind: an event spans its dates, a publication is its
+    day, and a record without an ISO date is undated (days 0)."""
+    for field, is_event in _DATE_FIELDS:
+        first = _day(metadata.get(field))
+        if first is None:
+            continue
+        if not is_event:
+            return first, first, _PUBLISHED
+        last = _day(metadata.get("event_end_date"))
+        return first, max(first, last or first), _EVENT
+    return 0, 0, _UNDATED
 
 
 def keyword_tokens(text: str, prefix: int = 6) -> list[str]:
@@ -196,8 +236,10 @@ class KeywordIndex:
             )
         return scores
 
-    def search(self, text: str, limit: int) -> list[RetrievedChunk]:
+    def search(self, text: str, limit: int, allowed: Mask | None = None) -> list[RetrievedChunk]:
         scores = self.scores(text)
+        if allowed is not None:
+            scores[~allowed] = 0.0
         matched = np.flatnonzero(scores > 0)
         if matched.size == 0 or limit <= 0:
             return []
@@ -264,6 +306,10 @@ class SearchIndex:
             for row, record in enumerate(self.records)
             if (record.get("metadata") or {}).get("section") == "day"
         ]
+        spans = np.asarray(
+            [record_span(record.get("metadata") or {}) for record in self.records], dtype=np.int64
+        ).reshape(-1, 3)
+        self.first_day, self.last_day, self.date_kind = spans[:, 0], spans[:, 1], spans[:, 2]
 
     @property
     def dimensions(self) -> int:
@@ -283,8 +329,10 @@ class SearchIndex:
         limit: int,
         distance_threshold: float,
         source_id: str | None = None,
+        allowed: Mask | None = None,
     ) -> list[RetrievedChunk]:
-        """Exact cosine search, nearest first, within the distance threshold."""
+        """Exact cosine search, nearest first, within the distance threshold; with ``allowed``
+        (one flag per record, from ``period_mask``) only among the allowed records."""
         if source_id is None:
             rows = self.matrix_rows
             matrix = self.unit
@@ -294,6 +342,8 @@ class SearchIndex:
         if rows.size == 0 or limit <= 0:
             return []
         distances = np.maximum(0.0, 1.0 - matrix @ _unit(query_vector))
+        if allowed is not None:  # before ranking, so the limit counts allowed records only
+            distances = np.where(allowed[rows], distances, np.inf)
         hits: list[RetrievedChunk] = []
         for position in np.argsort(distances, kind="stable"):
             distance = float(distances[position])
@@ -304,8 +354,32 @@ class SearchIndex:
                 break
         return hits
 
-    def keyword_search(self, text: str, limit: int) -> list[RetrievedChunk]:
-        return self.keywords.search(text, limit)
+    def keyword_search(
+        self, text: str, limit: int, allowed: Mask | None = None
+    ) -> list[RetrievedChunk]:
+        return self.keywords.search(text, limit, allowed)
+
+    def period_mask(self, start: str | None, end: str | None) -> Mask | None:
+        """The records a period admits: events that overlap it, publications from its first
+        day to ``PUBLICATION_SLACK_DAYS`` after its last, and every undated record. None when
+        the period has no valid bound, so a search covers everything."""
+        first, last = _day(start), _day(end)
+        if first is None and last is None:
+            return None
+        low = 0 if first is None else first
+        high = date.max.toordinal() if last is None else last
+        kind = self.date_kind
+        event = (kind == _EVENT) & (self.first_day <= high) & (self.last_day >= low)
+        published = (
+            (kind == _PUBLISHED)
+            & (self.first_day >= low)
+            & (self.first_day <= high + PUBLICATION_SLACK_DAYS)
+        )
+        mask: Mask = (kind == _UNDATED) | event | published
+        return mask
+
+    def is_dated(self, chunk_id: str) -> bool:
+        return bool(self.date_kind[self.row_by_id[chunk_id]] != _UNDATED)
 
     def distance_to(self, chunk_id: str, vectors: Sequence[Sequence[float]]) -> float:
         """The chunk's smallest cosine distance to any of the request's query vectors."""

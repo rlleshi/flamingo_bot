@@ -4,12 +4,14 @@ Narrow questions search every planner query plus the visitor's own wording with 
 keyword search, fused per record, exact anchors first, and keep at most seven passages. Broad
 questions (overviews over time, lists, comparisons, the status of several items) add a sample
 passage and extra queries, a follow-up search from what the first pass found, Pulsi day notes
-and a pool filled month by month, and keep up to thirty passages for a longer answer.
+and a pool filled month by month, and keep up to thirty passages for a longer answer. When the
+visitor names a period, both searches look only inside it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 import re
 import time
@@ -63,7 +65,7 @@ from flamingo_bot.prompting import (
     answer_instructions,
     build_answer_prompt,
 )
-from flamingo_bot.search_index import SearchIndex, chunk_month, record_key
+from flamingo_bot.search_index import Mask, SearchIndex, chunk_month, record_key
 
 logger = logging.getLogger("flamingo_bot.retrieval")
 
@@ -73,6 +75,9 @@ EXPANSION_TIMEOUT_SECONDS = 10.0
 FOLLOW_UP_TIMEOUT_SECONDS = 10.0
 #: First-pass passages shown to the follow-up call.
 FOLLOW_UP_SNIPPETS = 40
+#: With fewer dated records than this inside the named period, a broad search also searches the
+#: period's whole months (ranked after the period's own results).
+BROAD_MIN_DATED_PASSAGES = 5
 #: Fused candidates whose months weight the broad pool's month quotas.
 MONTH_WEIGHT_CANDIDATES = 150
 #: After a failed index reload, keep serving the loaded generation this long before retrying.
@@ -210,15 +215,21 @@ def fuse_records(lists: Sequence[Sequence[RetrievedChunk]]) -> list[RetrievedChu
     return sorted(deduplicate(list(best.values())), key=lambda chunk: -scores[record_key(chunk)])
 
 
-def in_period(chunk: RetrievedChunk, start: str | None, end: str | None) -> bool:
-    month = chunk_month(chunk)
-    return month == "undated" or (
-        (not start or month >= start[:7]) and (not end or month <= end[:7])
-    )
+def whole_months(start: str | None, end: str | None) -> tuple[str | None, str | None]:
+    """A period stretched from the first day of its first month to the last of its last."""
+    last = None
+    if end:
+        days = calendar.monthrange(int(end[:4]), int(end[5:7]))[1]
+        last = f"{end[:7]}-{days:02d}"
+    return (f"{start[:7]}-01" if start else None), last
 
 
 def _is_anchor(chunk: RetrievedChunk) -> bool:
     return chunk.metadata.get("retrieval_method") == "metadata-anchor"
+
+
+def _is_day_note(chunk: RetrievedChunk) -> bool:
+    return chunk.metadata.get("section") == "day"
 
 
 def broad_pool(
@@ -516,11 +527,15 @@ class ChatService:
 
     @staticmethod
     def _keyword_hits(
-        index: SearchIndex, text: str, limit: int, vectors: Sequence[Sequence[float]]
+        index: SearchIndex,
+        text: str,
+        limit: int,
+        vectors: Sequence[Sequence[float]],
+        allowed: Mask | None = None,
     ) -> list[RetrievedChunk]:
         return [
             hit.model_copy(update={"distance": index.distance_to(hit.chunk_id, vectors)})
-            for hit in index.keyword_search(text, limit)
+            for hit in index.keyword_search(text, limit, allowed)
         ]
 
     def _anchors(
@@ -617,6 +632,7 @@ class ChatService:
         texts: Sequence[str],
         text_vectors: Sequence[Sequence[float]],
         distance_vectors: Sequence[Sequence[float]],
+        allowed: Mask | None = None,
     ) -> list[list[RetrievedChunk]]:
         threshold = self.settings.flamingo_relevance_distance_threshold
         lists: list[list[RetrievedChunk]] = []
@@ -629,11 +645,14 @@ class ChatService:
                     limit=BROAD_HITS_PER_QUERY,
                     distance_threshold=threshold,
                     source_id=source,
+                    allowed=allowed,
                 )
             ]
             lists.append(deduplicate(hits))
         for text in texts:
-            lists.append(self._keyword_hits(index, text, BROAD_HITS_PER_QUERY, distance_vectors))
+            lists.append(
+                self._keyword_hits(index, text, BROAD_HITS_PER_QUERY, distance_vectors, allowed)
+            )
         return lists
 
     def _broad_pool(
@@ -643,9 +662,14 @@ class ChatService:
         fused: Sequence[RetrievedChunk],
         vectors: Sequence[Sequence[float]],
         period: tuple[str | None, str | None],
+        widened: tuple[str | None, str | None] | None = None,
     ) -> list[RetrievedChunk]:
         start, end = period
         notes = index.day_notes(vectors, start=start, end=end, budget=BROAD_DAY_NOTES)
+        if not notes and widened is not None:  # no Pulsi day inside the named days
+            notes = index.day_notes(
+                vectors, start=widened[0], end=widened[1], budget=BROAD_DAY_NOTES
+            )
         return broad_pool(fused=fused, anchors=self._anchors(index, plan, vectors), notes=notes)
 
     async def _select_broad(
@@ -667,7 +691,15 @@ class ChatService:
                 return cap_reference_headlines(selected_broad_passages(selection, pool))
             except (FlamingoBotError, ValueError) as exc:
                 logger.warning("broad_selector_fallback error=%s", type(exc).__name__)
-        return cap_reference_headlines(spread_by_month(pool, BROAD_FALLBACK_SELECTED))
+        # Without the selector, keep the relevance cutoff: keyword hits never had one. Anchors
+        # and day notes stay, since they were chosen by metadata and date, not similarity.
+        threshold = self.settings.flamingo_relevance_distance_threshold
+        relevant = [
+            chunk
+            for chunk in pool
+            if _is_anchor(chunk) or _is_day_note(chunk) or chunk.distance <= threshold
+        ]
+        return cap_reference_headlines(spread_by_month(relevant, BROAD_FALLBACK_SELECTED))
 
     async def retrieve_broad(
         self,
@@ -679,7 +711,9 @@ class ChatService:
         period: tuple[str | None, str | None] = (None, None),
         safety_identifier: str | None = None,
     ) -> list[RetrievedChunk]:
-        """Broad retrieval: up to thirty passages spread over the period's months."""
+        """Broad retrieval: up to thirty passages spread over the period's months, searched
+        only inside the named period (widened to its whole months when that holds too little).
+        """
         started = time.monotonic()
         today = as_of or datetime.now(UTC).date()
         index = await self._pinned_index()
@@ -695,8 +729,23 @@ class ChatService:
         start, end = period
         vectors = await self.embedder.embed_texts(queries)
         self._check_dimensions(index, vectors)
-        lists = await asyncio.to_thread(self._broad_lists, index, queries, vectors, vectors)
-        fused = [chunk for chunk in fuse_records(lists) if in_period(chunk, start, end)]
+        allowed = index.period_mask(start, end)
+        lists = await asyncio.to_thread(
+            self._broad_lists, index, queries, vectors, vectors, allowed
+        )
+        fused = fuse_records(lists)
+        widened: tuple[str | None, str | None] | None = None
+        if allowed is not None:
+            dated = sum(1 for chunk in fused if index.is_dated(chunk.chunk_id))
+            wider = whole_months(start, end)
+            if dated < BROAD_MIN_DATED_PASSAGES and wider != (start, end):
+                # Added after the period's own lists, so its records score in both and lead.
+                widened, allowed = wider, index.period_mask(*wider)
+                lists += await asyncio.to_thread(
+                    self._broad_lists, index, queries, vectors, vectors, allowed
+                )
+                fused = fuse_records(lists)
+            logger.info("broad_period dated=%d widened=%s", dated, widened is not None)
         follow_ups: list[str] = []
         if fused:
             snippets = [
@@ -718,10 +767,12 @@ class ChatService:
             else:
                 vectors = [*vectors, *more_vectors]
                 lists += await asyncio.to_thread(
-                    self._broad_lists, index, follow_ups, more_vectors, vectors
+                    self._broad_lists, index, follow_ups, more_vectors, vectors, allowed
                 )
-                fused = [chunk for chunk in fuse_records(lists) if in_period(chunk, start, end)]
-        pool = await asyncio.to_thread(self._broad_pool, index, plan, fused, vectors, period)
+                fused = fuse_records(lists)
+        pool = await asyncio.to_thread(
+            self._broad_pool, index, plan, fused, vectors, period, widened
+        )
         if not pool:
             return []
         chosen = await self._select_broad(question, history, plan, pool, today, safety_identifier)

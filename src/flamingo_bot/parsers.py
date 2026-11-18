@@ -1027,10 +1027,14 @@ def _parse_map_locations(source: ResolvedSource, path: Path) -> list[SourceDocum
                         f"Source: Harta e Protestave\nProtest: {title}\n"
                         f"Place: {city}, {country}\nDate: {start_date}"
                     ),
+                    # Dates under their own keys: event_date would make map protests
+                    # date anchors. Only the broad period filter reads these.
                     metadata={
                         "record_id": f"protest:{protest_id}",
                         "city_id": city_id,
                         "protest_id": protest_id,
+                        "event_start_date": start_date,
+                        **({"event_end_date": end_date} if end_date else {}),
                     },
                     identity_suffix=f"protest:{protest_id}",
                 )

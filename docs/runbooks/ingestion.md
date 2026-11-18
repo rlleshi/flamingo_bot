@@ -76,8 +76,12 @@ list or ranking, a comparison, the status of several items) and any period it na
   protest-day and aggregate anchors come first in a pool of at most 20; the
   independent reranker selects at most seven passages.
 - **Broad questions** also search a sample passage and up to four extra queries
-  written for the question, 30 hits per source and query, kept to the months of the
-  named period (exact anchors are not period-filtered).
+  written for the question, 30 hits per source and query. When the question names a
+  period, both searches look only inside it, before ranking: events that overlap it
+  (map protests by their start and end dates), articles and research notes published
+  from its first day to two days after its last, and undated records. If that finds
+  fewer than five dated records, the search also covers the period's whole months,
+  ranked after the period's own results. Exact anchors are not period-filtered.
   A follow-up call reads the first 40 hits and writes up to six more queries. The
   pool of 60 holds the anchors, up to 24 Pulsi day notes for the period, and passages
   taken month by month in proportion to where the relevant material is. The
@@ -86,8 +90,9 @@ list or ranking, a comparison, the status of several items) and any period it na
 
 Every failure has a logged fallback: a failed scope call answers as a narrow
 question, a failed expansion or follow-up searches without it, a failed broad
-selection keeps up to 14 passages spread across months, and a failed narrow
-selection keeps the diversified pool order. Duplicates are not corroboration. Named
+selection keeps up to 14 passages spread across months (anchors, day notes and
+passages within the relevance cutoff), and a failed narrow selection keeps the
+diversified pool order. Duplicates are not corroboration. Named
 places/dates retain their scope, and publication timestamps never become incident
 dates. Vague protest-supplies questions can explore police riot-control equipment
 as a possible meaning in the semantic route. The separate original-question route
