@@ -16,7 +16,7 @@ from flamingo_bot.planning import (
     deduplicate,
     metadata_filters,
     prepare_plan,
-    search_queries,
+    retrieval_queries,
     selected_passages,
 )
 
@@ -64,9 +64,13 @@ def test_original_question_route_and_explicit_date_take_priority() -> None:
         }
     )
     prepared = prepare_plan(plan, "And the airport in Vlora?")
-    assert prepared.queries == ["diluted movement position", "And the airport in Vlora?"]
+    assert prepared.queries == ["diluted movement position", "another diluted search"]
+    assert retrieval_queries(prepared, "And the airport in Vlora?") == [
+        "diluted movement position",
+        "another diluted search",
+        "And the airport in Vlora?",
+    ]
     assert not prepared.recent
-    assert all("October" not in value for value in search_queries(prepared, date(2026, 10, 18)))
 
 
 def test_recent_scope_is_a_hint_not_a_hardcoded_word_list() -> None:
@@ -74,10 +78,11 @@ def test_recent_scope_is_a_hint_not_a_hardcoded_word_list() -> None:
     plan = prepare_plan(
         SearchPlan.fallback("recent escalation").model_copy(update={"recent": True}), question
     )
-    queries = search_queries(plan, date(2026, 10, 18))
-    assert len(queries) == 2
-    assert all("October 2026" in value for value in queries)
-    assert queries[-1].endswith(question)
+    queries = retrieval_queries(plan, question)
+    # Recency widens the vector search; it no longer prefixes the queries with the month.
+    assert plan.recent
+    assert queries == ["recent escalation", question]
+    assert all("2026" not in value for value in queries)
     assert plan.dates == []
 
 
@@ -86,7 +91,8 @@ def test_ambiguous_protest_supplies_keep_semantic_and_original_routes() -> None:
     semantic = "Albania protest supplies police riot-control equipment deliveries from UAE"
     plan = prepare_plan(SearchPlan.fallback(semantic), question)
 
-    assert plan.queries == [semantic, question]
+    assert plan.queries == [semantic]
+    assert retrieval_queries(plan, question) == [semantic, question]
     assert plan.dates == []
     assert "police riot-control equipment" in PLAN_INSTRUCTIONS
     assert "never as evidence that a delivery or its purpose is proven" in PLAN_INSTRUCTIONS

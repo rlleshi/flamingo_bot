@@ -17,20 +17,32 @@ local source repos -> Python parse/chunk/diff -> Azure embeddings
                                             -> staged Firestore generation
                                             -> active pointer
 
-visitor -> <flamingo-chat> -> FastAPI SSE -> GPT-6 Luna query plan
-                                         -> Firestore vectors + exact anchors
+visitor -> <flamingo-chat> -> FastAPI SSE -> GPT-6 Luna query plan + broad/narrow scope
+                                         -> in-memory copy of the active generation:
+                                            vectors + keywords + exact anchors
+                                            (broad: extra queries, follow-up search,
+                                             Pulsi day notes, month-by-month pool)
                                          -> GPT-5.6 Luna passage selection
                                          -> GPT-6.1 Sol cited streamed answer
 ```
 
 There is no LangChain, LangGraph, ChromaDB, live request-time crawler, or second
-local vector database. Unit tests use non-billable in-memory fakes; local and
-production retrieval use the same named Firestore database.
+vector database: each serving instance loads the active Firestore generation into
+memory and searches it exactly. Unit tests use non-billable in-memory fakes; local
+and production retrieval read the same named Firestore database.
 
-Live retrieval combines the original question with a contextualized search,
-source-filtered vector queries and bounded metadata anchors. All reads in one
-request use the same published generation. At most 20 candidates are ranked,
-and no more than seven relevant passages reach Sol.
+Live retrieval searches every planner query and the visitor's own wording with
+vector and keyword search, fused per source record, with bounded metadata anchors
+first. Narrow questions rank at most 20 candidates and pass at most seven passages
+to Sol. Broad questions (overviews over time, lists, comparisons, the status of
+several items) add written queries and a follow-up search, look only inside the
+period the question names (widening to its whole months when that finds almost
+nothing), rank a pool of 60 spread across its months, and pass up to 30 passages for
+an answer of up to 3,000 tokens. All reads in one request use the same published generation. Publication
+adds computed summary records (Pulsi, map and Dossier counts and rankings) and a
+packed snapshot that serving instances load quickly. The answer instructions forbid
+naming private people (protesters, the injured or detained, their relatives); the
+widget lists only the sources an answer cites, under the publishers' own titles.
 
 Answers use a small Markdown subset: paragraphs, bullet and numbered lists,
 bold, and italic. The prompt allows nothing else and the widget renders exactly

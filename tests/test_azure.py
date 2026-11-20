@@ -111,3 +111,135 @@ async def test_sol_stream_requires_completion_and_closes_on_failure(terminal: st
     assert stream.closed
     assert client.responses.create.call_args.kwargs["model"] == "gpt-6.1-sol"
     assert client.responses.create.call_args.kwargs["reasoning"] == {"effort": "low"}
+
+
+
+@pytest.mark.asyncio
+async def test_only_connections_that_never_opened_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from openai import APIConnectionError, APITimeoutError
+
+    from flamingo_bot.providers import azure as azure_module
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(azure_module.asyncio, "sleep", no_sleep)
+    request = httpx.Request("POST", "https://example.invalid/openai")
+
+    def failure(cause: Exception) -> APIConnectionError:
+        try:
+            raise APIConnectionError(request=request) from cause
+        except APIConnectionError as exc:
+            return exc
+
+    attempts: list[str] = []
+
+    async def handshake_dropped_twice() -> str:
+        attempts.append("call")
+        if len(attempts) < 3:
+            raise failure(httpx.ConnectError("TLS handshake dropped"))
+        return "ok"
+
+    assert await azure_module.with_connect_retry(handshake_dropped_twice) == "ok"
+    assert len(attempts) == 3
+
+    async def always_down() -> str:
+        attempts.append("down")
+        raise failure(httpx.ConnectError("unreachable"))
+
+    attempts.clear()
+    with pytest.raises(APIConnectionError):
+        await azure_module.with_connect_retry(always_down)
+    assert len(attempts) == len(azure_module.CONNECT_RETRY_DELAYS) + 1
+
+    async def dropped_after_sending() -> str:
+        attempts.append("sent")
+        raise failure(httpx.RemoteProtocolError("server disconnected"))
+
+    attempts.clear()
+    with pytest.raises(APIConnectionError):
+        await azure_module.with_connect_retry(dropped_after_sending)
+    assert attempts == ["sent"]  # Azure may have received it: never sent twice
+
+    async def slow() -> str:
+        attempts.append("timeout")
+        raise APITimeoutError(request=request)
+
+    attempts.clear()
+    with pytest.raises(APITimeoutError):
+        await azure_module.with_connect_retry(slow)
+    assert attempts == ["timeout"]
+
+
+class Malformed:
+    status = "completed"
+
+    @property
+    def output_text(self) -> str:
+        raise TypeError("content list is null")
+
+
+@pytest.mark.asyncio
+async def test_malformed_structured_responses_become_provider_errors() -> None:
+    models = provider()
+    models.condense_client = Client(Malformed())  # type: ignore[assignment]
+    with pytest.raises(ProviderError, match="malformed"):
+        await models.classify_scope(instructions="Rules", prompt="Question", safety_identifier=None)
+
+
+class BrokenStream(Stream):
+    def __init__(self, failure: Exception) -> None:
+        super().__init__([])
+        self.failure = failure
+
+    async def __aiter__(self) -> Any:
+        yield SimpleNamespace(type="response.output_text.delta", delta="Partial answer")
+        raise self.failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["transport", "delta"])
+async def test_stream_failures_after_text_become_provider_errors(bad: str) -> None:
+    import httpx
+
+    models = provider()
+    if bad == "transport":
+        stream: Stream = BrokenStream(httpx.ReadTimeout("read timed out"))
+    else:
+        stream = Stream([SimpleNamespace(type="response.output_text.delta", delta=["not", "text"])])
+    models.chat_client = Client(stream)  # type: ignore[assignment]
+    with pytest.raises(ProviderError):
+        async for _ in models.stream_answer(
+            instructions="Rules", prompt="Evidence", safety_identifier=None
+        ):
+            pass
+    assert stream.closed
+
+
+def message(text: str) -> Any:
+    return SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text=text)])
+
+
+@pytest.mark.asyncio
+async def test_a_reply_with_one_corrupted_and_one_clean_message_uses_the_clean_one() -> None:
+    plan = SearchPlan.fallback("Paketa e Maleve").model_dump_json()
+    corrupted = plan[:60] + '"]}\n","recent":false}<lemma> siulittaas'
+    models = provider()
+    models.condense_client = Client(  # type: ignore[assignment]
+        SimpleNamespace(
+            status="completed",
+            output_text=corrupted + plan,  # what the SDK joins from the two messages
+            output=[message(corrupted), message(plan)],
+        )
+    )
+    result = await models.plan_search(instructions="Rules", prompt="Q", safety_identifier=None)
+    assert result.queries == ["Paketa e Maleve"]
+
+    models.condense_client = Client(  # type: ignore[assignment]
+        SimpleNamespace(status="completed", output_text=corrupted, output=[message(corrupted)])
+    )
+    with pytest.raises(ProviderError):
+        await models.plan_search(instructions="Rules", prompt="Q", safety_identifier=None)

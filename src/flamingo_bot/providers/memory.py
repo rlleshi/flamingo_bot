@@ -7,16 +7,23 @@ import math
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
+import numpy as np
+
 from flamingo_bot.models import RetrievedChunk
 from flamingo_bot.planning import (
     MAX_ANCHORS,
     MAX_METADATA_MATCHES,
+    BroadSelection,
+    FollowUpQueries,
     PassageSelection,
+    QueryExpansion,
+    QuestionScope,
     SearchPlan,
     cosine_distance,
     deduplicate,
     metadata_filters,
 )
+from flamingo_bot.search_index import SearchIndex
 
 
 def _matches_metadata(
@@ -133,14 +140,77 @@ class InMemoryVectorStore:
                 )
         return deduplicate(list(found.values()))[:MAX_ANCHORS]
 
+    async def load_index(self, generation_id: str) -> SearchIndex:
+        records = [
+            {
+                "chunk_id": record.chunk_id,
+                "source_id": record.source_id,
+                "source_label": record.source_label,
+                "title": record.title,
+                "text": record.text,
+                "canonical_url": record.canonical_url,
+                "legal_status": record.legal_status,
+                "content_type": record.metadata.get("content_type", ""),
+                "chunk_index": record.metadata.get("chunk_index", 0),
+                "metadata": dict(record.metadata),
+            }
+            for record, _ in self.records
+        ]
+        dimensions = len(self.records[0][1]) if self.records else 1
+        vectors = np.asarray(
+            [vector for _, vector in self.records] or np.zeros((0, dimensions)), dtype=np.float32
+        )
+        return SearchIndex(generation_id, records, vectors.reshape(len(records), dimensions))
+
+
+NARROW_SCOPE = QuestionScope(broad=False, period_start="", period_end="")
+
 
 class ScriptedPlanner:
-    """Deterministic stand-in for typed Azure query planning."""
+    """Deterministic stand-in for the small model's typed retrieval calls."""
 
-    def __init__(self, plan: SearchPlan | None = None, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        plan: SearchPlan | None = None,
+        *,
+        error: Exception | None = None,
+        scope: QuestionScope | Exception = NARROW_SCOPE,
+        expansion: QueryExpansion | Exception | None = None,
+        follow_up: FollowUpQueries | Exception | None = None,
+    ) -> None:
         self.plan = plan or SearchPlan.fallback("Revolucioni Flamingo")
         self.error = error
+        self.scope = scope
+        self.expansion = expansion or QueryExpansion(passage="", queries=[])
+        self.follow_up = follow_up or FollowUpQueries(queries=[])
         self.calls: list[dict[str, str | None]] = []
+        self.scope_calls: list[str] = []
+        self.expansion_calls: list[str] = []
+        self.follow_up_calls: list[str] = []
+
+    async def classify_scope(
+        self, *, instructions: str, prompt: str, safety_identifier: str | None
+    ) -> QuestionScope:
+        self.scope_calls.append(prompt)
+        if isinstance(self.scope, Exception):
+            raise self.scope
+        return self.scope
+
+    async def expand_question(
+        self, *, instructions: str, prompt: str, safety_identifier: str | None
+    ) -> QueryExpansion:
+        self.expansion_calls.append(prompt)
+        if isinstance(self.expansion, Exception):
+            raise self.expansion
+        return self.expansion
+
+    async def follow_up_queries(
+        self, *, instructions: str, prompt: str, safety_identifier: str | None
+    ) -> FollowUpQueries:
+        self.follow_up_calls.append(prompt)
+        if isinstance(self.follow_up, Exception):
+            raise self.follow_up
+        return self.follow_up
 
     async def plan_search(
         self,
@@ -162,10 +232,26 @@ class ScriptedPlanner:
 
 
 class ScriptedRanker:
-    def __init__(self, selected_ids: Sequence[str] = (), *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        selected_ids: Sequence[str] = (),
+        *,
+        error: Exception | None = None,
+        broad_ids: Sequence[str] | Exception = (),
+    ) -> None:
         self.selected_ids = list(selected_ids)
         self.error = error
+        self.broad_ids = broad_ids
         self.calls: list[dict[str, str | None]] = []
+        self.broad_calls: list[dict[str, str | None]] = []
+
+    async def select_broad_passages(
+        self, *, instructions: str, prompt: str, safety_identifier: str | None
+    ) -> BroadSelection:
+        self.broad_calls.append({"instructions": instructions, "prompt": prompt})
+        if isinstance(self.broad_ids, Exception):
+            raise self.broad_ids
+        return BroadSelection(selected_ids=list(self.broad_ids))
 
     async def select_passages(
         self,
@@ -193,12 +279,14 @@ class ScriptedAnswerGenerator:
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append(
             {
                 "instructions": instructions,
                 "prompt": prompt,
                 "safety_identifier": safety_identifier,
+                "max_output_tokens": str(max_output_tokens) if max_output_tokens else None,
             }
         )
         for word in self.answer.split(" "):

@@ -13,8 +13,16 @@ from flamingo_bot.models import (
     GenerationManifest,
     RetrievedChunk,
 )
-from flamingo_bot.planning import PassageSelection, SearchPlan
+from flamingo_bot.planning import (
+    BroadSelection,
+    FollowUpQueries,
+    PassageSelection,
+    QueryExpansion,
+    QuestionScope,
+    SearchPlan,
+)
 from flamingo_bot.quota import QuotaDecision
+from flamingo_bot.search_index import SearchIndex
 
 
 class Embedder(Protocol):
@@ -28,10 +36,13 @@ class AnswerGenerator(Protocol):
         instructions: str,
         prompt: str,
         safety_identifier: str | None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]: ...
 
 
 class QueryPlanner(Protocol):
+    """The small model's retrieval calls: the plan, the scope and broad-question queries."""
+
     async def plan_search(
         self,
         *,
@@ -39,6 +50,30 @@ class QueryPlanner(Protocol):
         prompt: str,
         safety_identifier: str | None,
     ) -> SearchPlan: ...
+
+    async def classify_scope(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> QuestionScope: ...
+
+    async def expand_question(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> QueryExpansion: ...
+
+    async def follow_up_queries(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> FollowUpQueries: ...
 
 
 class PassageRanker(Protocol):
@@ -49,6 +84,14 @@ class PassageRanker(Protocol):
         prompt: str,
         safety_identifier: str | None,
     ) -> PassageSelection: ...
+
+    async def select_broad_passages(
+        self,
+        *,
+        instructions: str,
+        prompt: str,
+        safety_identifier: str | None,
+    ) -> BroadSelection: ...
 
 
 class VectorStore(Protocol):
@@ -73,6 +116,10 @@ class VectorStore(Protocol):
         *,
         generation_id: str,
     ) -> list[RetrievedChunk]: ...
+
+    async def load_index(self, generation_id: str) -> SearchIndex:
+        """Every chunk of one generation, for in-memory retrieval."""
+        ...
 
 
 class PublicationStore(VectorStore, Protocol):

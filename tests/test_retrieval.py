@@ -218,6 +218,23 @@ class RecordingEmbedder:
         return [[1.0, 0.0] for _ in texts]
 
 
+class TitleRanker(ScriptedRanker):
+    """Selects candidates by title, whatever their position in the fused pool."""
+
+    def __init__(self, *titles: str) -> None:
+        super().__init__()
+        self.titles = titles
+
+    async def select_passages(
+        self, *, instructions: str, prompt: str, safety_identifier: str | None
+    ) -> Any:
+        passages = json.loads(prompt)["passages"]
+        self.selected_ids = [item["id"] for item in passages if item["title"] in self.titles]
+        return await super().select_passages(
+            instructions=instructions, prompt=prompt, safety_identifier=safety_identifier
+        )
+
+
 def history_pair() -> list[ConversationTurn]:
     return [
         ConversationTurn(role="user", text="Cila ishte dita më e madhe sipas indeksit Pulsi?"),
@@ -280,18 +297,17 @@ async def test_attendance_followup_retrieves_escalation_not_the_participation_pe
             recent=True,
         )
     )
-    ranker = ScriptedRanker(["C2"])
+    ranker = TitleRanker("October escalation report")
     service, embedder, generator = service_for(planner, ranker)
     citations, stream = await service.stream(question, history=history_pair())
     assert [part async for part in stream]
     assert [citation.title for citation in citations] == ["October escalation report"]
-    assert len(embedder.queries) == 2
-    assert embedder.queries[-1].endswith(question)
-    assert "diluted query" not in " ".join(embedder.queries)
+    # Both planner queries and the visitor's own wording are searched, without a month prefix.
+    assert embedder.queries == ["recent protest escalation", "diluted query", question]
     ranking = json.loads(str(ranker.calls[0]["prompt"]))
     assert ranking["question"] == question
     prompt = str(generator.calls[0]["prompt"])
-    assert "If referring to recent Flamingo escalation" in prompt
+    assert "<retrieval_interpretation>\nIf referring to recent escalation\n" in prompt
     assert "Visitor question:\n" + question in prompt
     assert "Assistant: 20 qershor 2026, indeksi 100 ." in prompt
     assert "Pulsi participation index" not in prompt.split("Evidence blocks:")[1]
@@ -403,30 +419,28 @@ async def test_all_searches_pin_one_generation_for_the_entire_request() -> None:
         def __init__(self, records: Any) -> None:
             super().__init__(records)
             self.reads = 0
-            self.generations: list[str | None] = []
+            self.loaded: list[str] = []
 
         async def active_generation(self) -> str:
             self.reads += 1
             return f"generation-{self.reads}"
 
-        async def search(self, vector: Any, **kwargs: Any) -> list[RetrievedChunk]:
-            self.generations.append(kwargs["generation_id"])
-            return await super().search(vector, **kwargs)
-
-        async def metadata_passages(
-            self, plan: Any, vectors: Any, *, generation_id: str
-        ) -> list[RetrievedChunk]:
-            self.generations.append(generation_id)
-            return []
+        async def load_index(self, generation_id: str) -> Any:
+            self.loaded.append(generation_id)
+            return await super().load_index(generation_id)
 
     store = ChangingStore([(record("index", "diaspora-zbarkon", "Index"), [1.0, 0.0])])
     service, _, _ = service_for(
         ScriptedPlanner(plan_for("Peak", participation_section="index")),
         store=store,
     )
-    await service.stream("Peak participation?")
+    citations, _ = await service.stream("Peak participation?")
     assert store.reads == 1
-    assert set(store.generations) == {"generation-1"}
+    assert store.loaded == ["generation-1"]
+    assert citations
+    # The next request reads the pointer again and loads the generation it names.
+    await service.stream("Peak participation?")
+    assert store.loaded == ["generation-1", "generation-2"]
 
 
 @pytest.mark.asyncio
@@ -434,8 +448,14 @@ async def test_metadata_failure_keeps_vector_evidence_and_does_not_log_question(
     caplog: Any,
 ) -> None:
     class BrokenMetadataStore(InMemoryVectorStore):
-        async def metadata_passages(self, *args: Any, **kwargs: Any) -> list[RetrievedChunk]:
-            raise ProviderError("private provider detail")
+        async def load_index(self, generation_id: str) -> Any:
+            index = await super().load_index(generation_id)
+
+            def broken(*args: Any, **kwargs: Any) -> list[RetrievedChunk]:
+                raise ProviderError("private provider detail")
+
+            index.metadata_passages = broken  # type: ignore[method-assign]
+            return index
 
     store = BrokenMetadataStore([(record("index", "diaspora-zbarkon", "Index"), [1.0, 0.0])])
     service, _, _ = service_for(

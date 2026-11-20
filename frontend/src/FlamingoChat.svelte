@@ -19,6 +19,7 @@
   import { observeSuggestionDisplay, WidgetMetrics, type AnswerRating } from "./lib/metrics";
   import { refusalBubble, refusalMessage, refusalReason } from "./lib/refusal";
   import { parseRichText, type InlineNode } from "./lib/richtext";
+  import { citedSources } from "./lib/citations";
   import { consumeEventStream, type ServerEvent } from "./lib/sse";
   import { selectSuggestions, SUGGESTION_COUNT, type SelectedSuggestion } from "./lib/suggestions";
 
@@ -35,6 +36,8 @@
     text: string;
     citations: Citation[];
     pending?: boolean;
+    /** The service said this is a broad question: a longer search before the first word. */
+    thinkingHarder?: boolean;
     completed?: boolean;
     failed?: boolean;
     excluded?: boolean;
@@ -177,6 +180,8 @@
       typeof event.data.source === "string"
     ) {
       appendCitation(messageId, event.data as Citation);
+    } else if (event.event === "status" && event.data.depth === "broad") {
+      updateMessage(messageId, { thinkingHarder: true });
     } else if (event.event === "error") {
       throw new Error(
         typeof event.data.code === "string" ? event.data.code : "stream_failed",
@@ -461,17 +466,22 @@
       on:scroll={handleMessagesScroll}
     >
       {#each messages as message (message.id)}
+        {@const shownCitations = citedSources(message.citations, message.text)}
         <article class:assistant={message.role === "assistant"} class:user={message.role === "user"}>
           {#if message.role === "user"}
             <p>{message.text}</p>
+          {:else if message.pending && !message.text && message.thinkingHarder}
+            <p class="thinking-harder">
+              {isEnglish() ? "Diella is thinking harder…" : "Diella po mendon më thellë…"}
+            </p>
           {:else if message.pending && !message.text}
             <p>Thinking…</p>
           {:else}
             {@render answerBody(message)}
           {/if}
-          {#if message.citations.length > 0}
+          {#if shownCitations.length > 0}
             <ol class="citations" aria-label="Sources">
-              {#each message.citations as citation}
+              {#each shownCitations as citation}
                 {@const href = safeSourceUrl(citation.url)}
                 <li>
                   {#if href}
@@ -891,6 +901,33 @@
     font-style: italic;
   }
 
+  /* A broad question searches for ten seconds or more before its first word: a slow light
+     sweeps across the label so the wait reads as work, not as a stall. */
+  .thinking-harder {
+    background: linear-gradient(
+      90deg,
+      var(--flamingo-muted) 30%,
+      var(--flamingo-accent) 50%,
+      var(--flamingo-muted) 70%
+    );
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 600;
+    animation: thinking-shimmer 2.4s linear infinite;
+  }
+
+  @keyframes thinking-shimmer {
+    from {
+      background-position: 110% 0;
+    }
+
+    to {
+      background-position: -110% 0;
+    }
+  }
+
   article.assistant {
     align-self: flex-start;
     border-bottom-left-radius: 4px;
@@ -1082,6 +1119,12 @@
     .launcher,
     .launcher::after {
       animation: none !important;
+    }
+
+    .thinking-harder {
+      animation: none !important;
+      background: none;
+      color: var(--flamingo-ink);
     }
 
     *,

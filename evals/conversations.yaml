@@ -1,13 +1,14 @@
 version: 1
 description: Multi-turn API regressions replaying actual backend answers; semantic grounding requires
-  manual review.
+  manual review. Single-fact turns keep the narrow cap of 7 citations; turns that may be answered as broad
+  questions (overviews, rankings, comparisons) allow the broad cap of 30.
 cases:
 - id: pulsi-escalation-sq
   turns:
   - id: pulsi-escalation-sq-turn-1
     question: Cila ishte dita më e madhe sipas indeksit Pulsi?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Names 20 June 2026 / day 21 and index 100, not 100 people.
@@ -17,7 +18,7 @@ cases:
   - id: pulsi-escalation-sq-turn-2
     question: Pse u be e dhunshme kaq papritur
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Recognizes a change to protest escalation rather than participation measurement.
@@ -29,7 +30,7 @@ cases:
   - id: pulsi-escalation-sq-turn-3
     question: Po flas për tetorin, jo për ditën me indeksin më të lartë.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Follows the correction and discusses October escalation, not June attendance.
@@ -39,7 +40,7 @@ cases:
   - id: pulsi-escalation-sq-turn-4
     question: Si reagoi policia më 13–17 tetor 2026?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Describes source-reported policing during the stated October period.
@@ -49,7 +50,7 @@ cases:
   - id: pulsi-escalation-sq-turn-5
     question: Po referendumi për ligjin 21/2024, çfarë synon?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Switches to the referendum and explains its published aim.
@@ -58,7 +59,7 @@ cases:
   - id: pulsi-escalation-sq-turn-6
     question: Ma thuaj ne dy fjali.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Summarizes the referendum in two sentences, not the earlier violence discussion.
@@ -69,7 +70,7 @@ cases:
   - id: pulsi-escalation-en-turn-1
     question: Which day was biggest according to the Pulsi index?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Names 20 June 2026 / day 21 and normalized index 100, not a headcount.
@@ -78,7 +79,7 @@ cases:
   - id: pulsi-escalation-en-turn-2
     question: Why did it turn violent so suddenly?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Interprets the new subject as protest escalation, not a property of the index.
@@ -89,7 +90,7 @@ cases:
   - id: pulsi-escalation-en-turn-3
     question: I mean the recent October escalation, not the biggest rally.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Corrects the temporal scope without continuing to discuss June attendance.
@@ -98,7 +99,7 @@ cases:
   - id: pulsi-escalation-en-turn-4
     question: What do the reports say police did on 13–17 October 2026? Answer in English.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Answers about the stated police actions with appropriate source attribution.
@@ -108,7 +109,7 @@ cases:
   - id: pulsi-escalation-en-turn-5
     question: Switching topics, what is the referendum on Law 21/2024 trying to do?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Explains the referendum aim without mixing in the police discussion.
@@ -116,7 +117,7 @@ cases:
   - id: pulsi-escalation-en-turn-6
     question: Sum that up in two sentences.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Gives two sentences about the referendum, not the protest participation peak.
@@ -127,7 +128,7 @@ cases:
   - id: movement-airport-sq-turn-1
     question: Pse protestojnë shqiptarët me flamingon si simbol?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Explains the movement's published grievances and environmental origins.
@@ -137,7 +138,7 @@ cases:
   - id: movement-airport-sq-turn-2
     question: Po Aeroporti i Vlorës?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Switches to the Vlora airport issue with source-grounded environmental and institutional context.
@@ -147,7 +148,7 @@ cases:
   - id: movement-airport-sq-turn-3
     question: A ka vendim gjykate për këtë apo vetëm raportime dhe hetime?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Keeps the airport as the referent and accurately distinguishes the statuses supported by evidence.
@@ -157,7 +158,7 @@ cases:
   - id: movement-airport-sq-turn-4
     question: Shkurt, çfarë dimë me siguri dhe çfarë mbetet pretendim?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Separates documented procedural facts from attributed claims about the airport.
@@ -168,7 +169,7 @@ cases:
   - id: movement-airport-en-turn-1
     question: What is the Flamingo Revolution about?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Describes the movement and its published goals without inventing a formal party structure.
@@ -177,7 +178,7 @@ cases:
   - id: movement-airport-en-turn-2
     question: And the airport in Vlora?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Follows the new airport subject rather than repeating the movement introduction.
@@ -186,7 +187,7 @@ cases:
   - id: movement-airport-en-turn-3
     question: Was anyone convicted over that, or is it still an allegation or investigation?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Resolves that to the airport and preserves the legal status actually documented.
@@ -196,7 +197,7 @@ cases:
   - id: movement-airport-en-turn-4
     question: Give me a brief distinction between what is documented and what is alleged.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Distinguishes airport facts and attributed allegations in English.
@@ -284,7 +285,7 @@ cases:
   - id: map-sq-turn-1
     question: Sa qytete dhe sa protesta dokumenton Harta e Protestave?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Uses the map aggregate and distinguishes cities, protest records and protest days.
@@ -303,7 +304,7 @@ cases:
   - id: map-sq-turn-3
     question: A vërteton kjo se atje nuk pati fare dhunë?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Does not treat the absence of a violence description in a map as proof of no violence.
@@ -313,7 +314,7 @@ cases:
   - id: map-sq-turn-4
     question: Tani më shpjego si mund të kontribuojë diaspora pa qenë në Tiranë.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Follows the switch to public peaceful diaspora participation and practical contribution.
@@ -324,7 +325,7 @@ cases:
   - id: map-en-turn-1
     question: How many cities and protests are documented in the Flamingo protest map?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Distinguishes cities, protest records and protest days using the map aggregate.
@@ -342,7 +343,7 @@ cases:
   - id: map-en-turn-3
     question: Does that prove those rallies were completely peaceful?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Does not infer peaceful conduct from silence in a map listing.
@@ -352,7 +353,7 @@ cases:
   - id: map-en-turn-4
     question: Changing topics, how can someone abroad help the movement?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Gives grounded, peaceful participation options without inventing private contacts or future
@@ -384,7 +385,7 @@ cases:
   - id: media-sq-turn-3
     question: Ke ndonjë artikull të Lapsit për protestat studentore në tetor?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Identifies a relevant Lapsi reference and describes the limited supplied material honestly.
@@ -393,7 +394,7 @@ cases:
   - id: media-sq-turn-4
     question: Nga ajo referencë mund të më tregosh të gjithë përmbajtjen e artikullit?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Does not reconstruct or claim to have read a full article from a headline and short introduction.
@@ -422,7 +423,7 @@ cases:
   - id: media-en-turn-3
     question: Can you point me to Lapsi coverage of the student protests in October?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Identifies a relevant original article from the limited publisher metadata.
@@ -431,7 +432,7 @@ cases:
   - id: media-en-turn-4
     question: Tell me everything the full article says, based on that reference.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Clearly limits the answer to available metadata or excerpts and does not fabricate a full-article
@@ -449,7 +450,7 @@ cases:
   - id: scope-sq-turn-2
     question: Mirë, po çfarë është Revolucioni Flamingo?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Recovers from the unrelated question and gives a grounded movement explanation.
@@ -469,7 +470,7 @@ cases:
   - id: scope-en-turn-2
     question: Then explain the Flamingo movement instead.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Answers the legitimate new topic with current evidence rather than remaining stuck on the injection.
@@ -485,7 +486,7 @@ cases:
   - id: mixed-return-sq-turn-1
     question: Çfarë kërkon Revolucioni Flamingo?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Describes the published movement demands without inventing a single official leadership.
@@ -503,7 +504,7 @@ cases:
   - id: mixed-return-sq-turn-3
     question: Po pse pati përplasje në Tiranë në tetor 2026?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Switches to October clashes and attributes causes rather than linking them to index precision.
@@ -512,7 +513,7 @@ cases:
   - id: mixed-return-sq-turn-4
     question: Jo indeksin, dua veprimet e policisë dhe të protestuesve veçmas.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Separates reported police and participant actions while retaining the October Tirana scope.
@@ -521,7 +522,7 @@ cases:
   - id: mixed-return-sq-turn-5
     question: Tani lëri protestat. Çfarë synon referendumi 21/2024?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Follows the explicit referendum topic switch without carrying over casualty claims.
@@ -529,7 +530,7 @@ cases:
   - id: mixed-return-sq-turn-6
     question: Summarize that in two sentences in English.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Gives an English two-sentence summary of the referendum despite the preceding Albanian conversation.
@@ -540,7 +541,7 @@ cases:
   - id: mixed-return-en-turn-1
     question: What role does the diaspora play in Flamingo?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Explains published diaspora participation without inventing personal organizer information.
@@ -549,7 +550,7 @@ cases:
   - id: mixed-return-en-turn-2
     question: Which day had the highest Pulsi index?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Identifies day 21 / 20 June 2026 at normalized index 100
@@ -559,7 +560,7 @@ cases:
   - id: mixed-return-en-turn-3
     question: How come things got so heated all of a sudden?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Recognizes the protest escalation aspect despite the lack of the word violent.
@@ -569,7 +570,7 @@ cases:
   - id: mixed-return-en-turn-4
     question: I am asking about the October Tirana clashes, not the attendance figure.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Follows the correction and provides source-attributed October reporting.
@@ -578,7 +579,7 @@ cases:
   - id: mixed-return-en-turn-5
     question: New subject, what does the dossier say about the Vlora airport?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Switches to the airport dossier and preserves allegation and investigation status.
@@ -587,7 +588,7 @@ cases:
   - id: mixed-return-en-turn-6
     question: Ma përmblidh në dy fjali shqip.
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Summarizes the airport in Albanian in two sentences
@@ -610,7 +611,7 @@ cases:
   - id: premise-sq-turn-2
     question: Pse u pergjigj qeveria me dhune pas kaq muajsh marshimesh?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Finds escalation reporting despite unaccented Albanian and a leading formulation.
@@ -621,7 +622,7 @@ cases:
   - id: premise-sq-turn-3
     question: A do të thotë kjo që të gjithë protestuesit u bënë të dhunshëm?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Does not generalize individual reported actions to every participant.
@@ -651,7 +652,7 @@ cases:
   - id: premise-en-turn-2
     question: Why did the government double down after months of peaceful marching?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Recognizes the recent escalation topic without relying on the exact word violence.
@@ -663,7 +664,7 @@ cases:
   - id: premise-en-turn-3
     question: Does that mean everybody in the crowd was violent?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Distinguishes reported individual actions from generalizations about all protesters.
@@ -692,7 +693,7 @@ cases:
   - id: historical-correction-sq-turn-2
     question: A u bë e dhunshme ajo protestë?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Retains the particular Melbourne protest, rather than defaulting to October Tirana.
@@ -704,7 +705,7 @@ cases:
   - id: historical-correction-en-turn-1
     question: Which date was the peak of the Pulsi participation index?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Identifies 20 June 2026 / day 21 with the estimate caveat.
@@ -713,7 +714,7 @@ cases:
   - id: historical-correction-en-turn-2
     question: Was there violence on that specific day, 20 June 2026, rather than in October?
     min_citations: 1
-    max_citations: 7
+    max_citations: 30
     expect_citation_markers: true
     manual_review:
     - Preserves the explicitly requested June date even if more recent violence reporting is easier

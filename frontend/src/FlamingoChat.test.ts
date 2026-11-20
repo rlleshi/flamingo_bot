@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 async function openWidget(answerFails = false, metricsEnabled = true, incompleteAnswer = false,
-  count: number | null = 370, countUnavailable = false) {
+  count: number | null = 370, countUnavailable = false, chatBody: BodyInit | null = null) {
   const fetcher = vi.fn(async (url: string, options?: RequestInit) => {
     if (url.endsWith("/v1/widget-config")) return new Response(JSON.stringify({ metrics_enabled: metricsEnabled }));
     if (url.endsWith("/v1/widget-metrics")) return new Response(null, { status: 204 });
@@ -36,6 +36,7 @@ async function openWidget(answerFails = false, metricsEnabled = true, incomplete
       { status: countUnavailable ? 503 : 200 });
     if (url.endsWith("/v1/chat")) {
       if (answerFails) return new Response('{"detail":"server_busy"}', { status: 429 });
+      if (chatBody !== null) return new Response(chatBody);
       return new Response('event: delta\ndata: {"text":"A completed answer."}\n\n' +
         (incompleteAnswer ? "" : 'event: done\ndata: {"answer_count":{"answered":371,"approximate":true}}\n\n'));
     }
@@ -104,6 +105,76 @@ describe("widget suggestion and rating UI", () => {
     (root.querySelector(".suggestions button") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(root.querySelector(".messages")?.textContent).toContain("A completed answer."));
     expect(root.querySelectorAll(".answer-rating button")).toHaveLength(0);
+  });
+});
+
+describe("answer sources", () => {
+  const citation = (id: string, title: string) =>
+    `event: citation\ndata: ${JSON.stringify({ id, title, url: `https://example.org/${id}`, source: "Source" })}\n\n`;
+
+  it("lists only the sources the answer cites", async () => {
+    const body = citation("S1", "Unused passage") + citation("S2", "Cited passage") +
+      citation("S3", "Another unused passage") +
+      'event: delta\ndata: {"text":"Police used tear gas [S2]."}\n\n' +
+      'event: done\ndata: {}\n\n';
+    const { root } = await openWidget(false, true, false, 370, false, body);
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.querySelectorAll(".citations li")).toHaveLength(1));
+    expect(root.querySelector(".citations li")?.textContent).toContain("Cited passage");
+    expect(root.textContent).not.toContain("Unused passage");
+  });
+
+  it("shows no source list when the answer cites nothing", async () => {
+    const body = citation("S1", "Unused passage") +
+      'event: delta\ndata: {"text":"I could not find enough relevant evidence."}\n\n' +
+      'event: done\ndata: {}\n\n';
+    const { root } = await openWidget(false, true, false, 370, false, body);
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.querySelectorAll(".answer-rating button")).toHaveLength(2));
+    expect(root.querySelector(".citations")).toBeNull();
+  });
+});
+
+describe("waiting for a broad answer", () => {
+  function heldStream(depth: "broad" | "standard") {
+    const encoder = new TextEncoder();
+    let finish = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'event: meta\ndata: {"request_id": "r"}\n\n' +
+          `event: status\ndata: {"depth": "${depth}"}\n\n`,
+        ));
+        finish = () => {
+          controller.enqueue(encoder.encode(
+            'event: delta\ndata: {"text": "An overview by month [S1]."}\n\nevent: done\ndata: {}\n\n',
+          ));
+          controller.close();
+        };
+      },
+    });
+    return { body, finish: () => finish() };
+  }
+
+  it("says Diella is thinking harder until the first words arrive", async () => {
+    const stream = heldStream("broad");
+    const { root } = await openWidget(false, true, false, 370, false, stream.body);
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() =>
+      expect(root.querySelector(".thinking-harder")?.textContent).toContain("Diella is thinking harder"));
+    stream.finish();
+    await vi.waitFor(() => expect(root.textContent).toContain("An overview by month"));
+    expect(root.querySelector(".thinking-harder")).toBeNull();
+  });
+
+  it("keeps the ordinary label for a standard question", async () => {
+    const stream = heldStream("standard");
+    const { root } = await openWidget(false, true, false, 370, false, stream.body);
+    (root.querySelector(".suggestions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.textContent).toContain("Thinking…"));
+    expect(root.querySelector(".thinking-harder")).toBeNull();
+    stream.finish();
+    await vi.waitFor(() => expect(root.textContent).toContain("An overview by month"));
   });
 });
 
